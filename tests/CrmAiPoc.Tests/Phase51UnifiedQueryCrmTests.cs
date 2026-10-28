@@ -2,8 +2,6 @@ using CrmAiPoc.Api.Ai;
 using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
-using CrmAiPoc.Api.Crm.Mock;
-using CrmAiPoc.Api.Crm.Validation;
 using CrmAiPoc.Api.Security;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -32,12 +30,9 @@ public class Phase51UnifiedQueryCrmTests
         var auth = new CrmAuthorizationService(options, NullLogger<CrmAuthorizationService>.Instance, policy);
         var repo = new MockGenericCrmRepository(metadata, policy, builder, auth);
         var tools = new CrmAiTools(
-            new MockCrmDataProvider(NullLogger<MockCrmDataProvider>.Instance, options),
-            auth,
-            new CrmArgumentValidator(options),
+            repo,
             options,
             NullLogger<CrmAiTools>.Instance,
-            repo,
             metadata);
         return (repo, tools, policy);
     }

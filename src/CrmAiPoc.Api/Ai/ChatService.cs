@@ -1,13 +1,9 @@
 using System.Globalization;
 using System.Text.Json;
 using CrmAiPoc.Api.Configuration;
-using CrmAiPoc.Api.Crm;
 using CrmAiPoc.Api.Crm.Dynamics;
-using CrmAiPoc.Api.Crm.Models;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
-using CrmAiPoc.Api.Crm.Query;
-using CrmAiPoc.Api.Crm.Validation;
 using System.Diagnostics;
 using CrmAiPoc.Api.Diagnostics;
 using CrmAiPoc.Api.Models;
@@ -51,11 +47,8 @@ public sealed partial class ChatService
     private readonly IChatClient _chatClient;
     private readonly CrmAiTools _tools;
     private readonly ConversationStore _conversations;
-    private readonly ICrmDataProvider _crm;
-    private readonly Dynamics365CrmProvider _dynamics;
     private readonly DynamicsConnectivityService _connectivity;
     private readonly ICrmAuthorizationService _auth;
-    private readonly CrmArgumentValidator _validator;
     private readonly IGenericCrmRepository _genericCrm;
     private readonly ICrmMetadataService _metadata;
     private readonly CrmOptions _crmOptions;
@@ -71,11 +64,8 @@ public sealed partial class ChatService
         IChatClient chatClient,
         CrmAiTools tools,
         ConversationStore conversations,
-        ICrmDataProvider crm,
-        Dynamics365CrmProvider dynamics,
         DynamicsConnectivityService connectivity,
         ICrmAuthorizationService auth,
-        CrmArgumentValidator validator,
         IGenericCrmRepository genericCrm,
         ICrmMetadataService metadata,
         IOptions<CrmOptions> crmOptions,
@@ -90,11 +80,8 @@ public sealed partial class ChatService
         _chatClient = chatClient;
         _tools = tools;
         _conversations = conversations;
-        _crm = crm;
-        _dynamics = dynamics;
         _connectivity = connectivity;
         _auth = auth;
-        _validator = validator;
         _genericCrm = genericCrm;
         _metadata = metadata;
         _crmOptions = crmOptions.Value;
@@ -628,234 +615,8 @@ public sealed partial class ChatService
         }
     }
 
-    private async Task<ChatResponseDto> HandleQuerySalesOrdersPrivacySafeAsync(
-        ConversationSession session,
-        FunctionCallContent call,
-        string language,
-        bool outboundWasSafe,
-        CancellationToken cancellationToken)
-    {
-        var auth = _auth.AuthorizeRead(CrmEntityAllowlist.SalesOrder, "query_sales_orders");
-        if (!auth.Allowed)
-        {
-            session.Add(new ChatMessage(ChatRole.Assistant, auth.Reason));
-            return CreateResponse(session, auth.Reason, true, "query_sales_orders", null, null, outboundWasSafe);
-        }
-
-        var parsed = SalesOrderQueryPlanParser.ParseFromToolArguments(call.Arguments);
-        if (!parsed.Success || parsed.Plan is null)
-        {
-            var msg = parsed.Error ?? "Invalid query_sales_orders arguments.";
-            session.Add(new ChatMessage(ChatRole.Assistant, msg));
-            return CreateResponse(session, msg, true, "query_sales_orders", null, null, outboundWasSafe);
-        }
-
-        Guid? whoAmIUserId = null;
-        var dataProvider = ResolveSalesOrderProvider();
-        if (dataProvider.ProviderName.Equals("Dynamics365", StringComparison.OrdinalIgnoreCase))
-        {
-            if (_crmOptions.AllowSendLiveDataToAi)
-            {
-                throw new InvalidOperationException(
-                    "Crm:AllowSendLiveDataToAi must remain false for the privacy-safe chat path.");
-            }
-
-            var who = await _connectivity.WhoAmIAsync(cancellationToken);
-            if (!who.Success || who.UserId is null)
-            {
-                var fail = language == "ar"
-                    ? "تعذر التحقق من هوية Windows/CRM قبل الاستعلام عن أوامر البيع."
-                    : $"CRM identity verification failed before querying sales orders: {who.Message}";
-                session.Add(new ChatMessage(ChatRole.Assistant, fail));
-                return CreateResponse(session, fail, true, "query_sales_orders", null, null, outboundWasSafe);
-            }
-
-            whoAmIUserId = who.UserId;
-        }
-
-        SalesOrderQueryExecutionResult result;
-        try
-        {
-            result = await dataProvider.QuerySalesOrdersAsync(parsed.Plan, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Dynamics query_sales_orders failed");
-            var fail = language == "ar"
-                ? "فشل تنفيذ استعلام أوامر البيع على Dynamics 365."
-                : "Failed to execute the sales order query against Dynamics 365.";
-            session.Add(new ChatMessage(ChatRole.Assistant, fail));
-            return CreateResponse(session, fail, true, "query_sales_orders", null, whoAmIUserId, outboundWasSafe);
-        }
-
-        if (!string.IsNullOrWhiteSpace(result.Message) &&
-            string.IsNullOrWhiteSpace(result.RelativeRequestUri) &&
-            result.Items.Count == 0 &&
-            result.Count is null)
-        {
-            session.Add(new ChatMessage(ChatRole.Assistant, result.Message));
-            return CreateResponse(session, result.Message, true, "query_sales_orders", null, whoAmIUserId, outboundWasSafe);
-        }
-
-        var reply = LocalCrmReplyFormatter.FormatQueryResult(result, language, whoAmIUserId);
-        session.Add(new ChatMessage(ChatRole.Assistant, reply));
-
-        _logger.LogInformation(
-            "Privacy-safe query_sales_orders complete: provider={Provider}, operation={Operation}, rows={Rows}, count={Count}, sentToAi={Sent}",
-            dataProvider.ProviderName,
-            result.Operation,
-            result.Items.Count,
-            result.Count,
-            false);
-
-        return CreateResponse(
-            session,
-            reply,
-            privacySafe: true,
-            selectedTool: "query_sales_orders",
-            data: new
-            {
-                operation = result.Operation.ToString().ToLowerInvariant(),
-                appliedFilters = result.AppliedFilterSummary,
-                sort = result.SortSummary,
-                limit = result.Limit,
-                count = result.Count,
-                countMayBeCapped = result.CountMayBeCapped,
-                salesOrders = result.Items.Select(o => new
-                {
-                    o.SalesOrderId,
-                    o.Name,
-                    o.OrderNumber,
-                    o.CustomerAccountId,
-                    o.CreatedOn,
-                    o.ModifiedOn,
-                    o.TotalAmount,
-                    o.StatusCode,
-                    o.StatusLabel,
-                    o.StateCode,
-                    o.StateLabel
-                })
-            },
-            whoAmI: whoAmIUserId,
-            outboundWasSafe: outboundWasSafe,
-            crmProvider: dataProvider.ProviderName);
-    }
-
-    private async Task<ChatResponseDto> HandleSalesOrdersPrivacySafeAsync(
-        ConversationSession session,
-        FunctionCallContent call,
-        string language,
-        bool outboundWasSafe,
-        CancellationToken cancellationToken)
-    {
-        var auth = _auth.AuthorizeRead(CrmEntityAllowlist.SalesOrder, "get_sales_orders");
-        if (!auth.Allowed)
-        {
-            var denied = auth.Reason;
-            session.Add(new ChatMessage(ChatRole.Assistant, denied));
-            return CreateResponse(session, denied, privacySafe: true, "get_sales_orders", null, null, outboundWasSafe);
-        }
-
-        var limit = ExtractLimit(call.Arguments);
-        var safeLimit = _validator.ClampLimit(limit);
-
-        Guid? whoAmIUserId = null;
-        var dataProvider = ResolveSalesOrderProvider();
-        if (dataProvider.ProviderName.Equals("Dynamics365", StringComparison.OrdinalIgnoreCase))
-        {
-            if (_crmOptions.AllowSendLiveDataToAi)
-            {
-                throw new InvalidOperationException(
-                    "Crm:AllowSendLiveDataToAi must remain false for the privacy-safe chat path.");
-            }
-
-            var who = await _connectivity.WhoAmIAsync(cancellationToken);
-            if (!who.Success || who.UserId is null)
-            {
-                var fail = language == "ar"
-                    ? "تعذر التحقق من هوية Windows/CRM قبل قراءة أوامر البيع."
-                    : $"CRM identity verification failed before reading sales orders: {who.Message}";
-                _logger.LogWarning("WhoAmI failed before get_sales_orders: {Message}", who.Message);
-                session.Add(new ChatMessage(ChatRole.Assistant, fail));
-                return CreateResponse(session, fail, true, "get_sales_orders", null, null, outboundWasSafe);
-            }
-
-            whoAmIUserId = who.UserId;
-            _logger.LogInformation(
-                "CRM Windows identity for read: UserId={UserId}, AuthMode={AuthMode}. Process default credentials are not assumed to equal interactive end-user SSO.",
-                who.UserId,
-                who.AuthMode);
-        }
-
-        CrmQueryResult<CrmSalesOrder> result;
-        try
-        {
-            result = await dataProvider.GetSalesOrdersAsync(safeLimit, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Dynamics get_sales_orders failed");
-            var fail = language == "ar"
-                ? "فشل جلب أوامر البيع من Dynamics 365."
-                : "Failed to retrieve sales orders from Dynamics 365.";
-            session.Add(new ChatMessage(ChatRole.Assistant, fail));
-            return CreateResponse(session, fail, true, "get_sales_orders", null, whoAmIUserId, outboundWasSafe);
-        }
-
-        var structured = result.Items.Select(o => new
-        {
-            o.SalesOrderId,
-            o.Name,
-            o.OrderNumber,
-            o.CustomerAccountId,
-            o.CreatedOn,
-            o.ModifiedOn,
-            o.TotalAmount,
-            o.StatusCode,
-            o.StatusLabel,
-            o.StateCode,
-            o.StateLabel
-        }).ToList();
-
-        var reply = LocalCrmReplyFormatter.FormatSalesOrders(
-            result.Items,
-            safeLimit,
-            language,
-            dataProvider.ProviderName,
-            whoAmIUserId);
-
-        session.Add(new ChatMessage(ChatRole.Assistant, reply));
-
-        _logger.LogInformation(
-            "Privacy-safe get_sales_orders complete: provider={Provider}, count={Count}, sentToAi={Sent}",
-            dataProvider.ProviderName,
-            result.Items.Count,
-            false);
-
-        return CreateResponse(
-            session,
-            reply,
-            privacySafe: true,
-            selectedTool: "get_sales_orders",
-            data: new { limit = safeLimit, totalMatched = result.TotalMatched, salesOrders = structured },
-            whoAmI: whoAmIUserId,
-            outboundWasSafe: outboundWasSafe,
-            crmProvider: dataProvider.ProviderName);
-    }
-
-    private ICrmDataProvider ResolveSalesOrderProvider()
-    {
-        if (_crmOptions.EnableLiveIntegration && !string.IsNullOrWhiteSpace(_crmOptions.BaseUrl))
-        {
-            return _dynamics;
-        }
-
-        return _crm;
-    }
-
     private List<AITool> CreateToolDeclarations() =>
     [
-        // Single generic CRM tool for Groq. Legacy CrmAiTools methods remain for unit tests only.
         AIFunctionFactory.Create(_tools.query_crm)
     ];
 
@@ -872,29 +633,6 @@ public sealed partial class ChatService
         ];
     }
 
-    private async Task<string> ExecuteDeclaredToolLocallyAsync(
-        FunctionCallContent call,
-        IList<AITool> tools,
-        CancellationToken cancellationToken)
-    {
-        var fn = tools.OfType<AIFunction>().FirstOrDefault(t =>
-            string.Equals(t.Name, call.Name, StringComparison.OrdinalIgnoreCase));
-        if (fn is null)
-        {
-            return JsonSerializer.Serialize(new { error = true, message = $"Unknown tool '{call.Name}'." });
-        }
-
-        var args = call.Arguments is null ? null : new AIFunctionArguments(call.Arguments);
-        var raw = await fn.InvokeAsync(args, cancellationToken);
-        return raw switch
-        {
-            string s => s,
-            JsonElement je => je.GetRawText(),
-            null => JsonSerializer.Serialize(new { error = true, message = "Empty tool result." }),
-            _ => JsonSerializer.Serialize(raw)
-        };
-    }
-
     private static string? GetArgValue(IDictionary<string, object?>? arguments, string key)
     {
         if (arguments is null || !arguments.TryGetValue(key, out var raw) || raw is null)
@@ -903,29 +641,6 @@ public sealed partial class ChatService
         }
 
         return Convert.ToString(raw, CultureInfo.InvariantCulture);
-    }
-
-    private static int ExtractLimit(IDictionary<string, object?>? arguments)
-    {
-        if (arguments is null)
-        {
-            return 10;
-        }
-
-        if (!arguments.TryGetValue("limit", out var raw) || raw is null)
-        {
-            return 10;
-        }
-
-        return raw switch
-        {
-            int i => i,
-            long l => (int)l,
-            double d => (int)d,
-            JsonElement je when je.TryGetInt32(out var ji) => ji,
-            string s when int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) => parsed,
-            _ => 10
-        };
     }
 
     private async Task<ChatResponse> GetResponseWithRetryAsync(

@@ -1,8 +1,7 @@
 using CrmAiPoc.Api.Ai;
 using CrmAiPoc.Api.Configuration;
-using CrmAiPoc.Api.Crm.Mock;
-using CrmAiPoc.Api.Crm.Query;
-using CrmAiPoc.Api.Crm.Validation;
+using CrmAiPoc.Api.Crm.Generic;
+using CrmAiPoc.Api.Crm.Metadata;
 using CrmAiPoc.Api.Security;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -41,68 +40,58 @@ public class Phase4PrivacyAndSecurityTests
     }
 
     [Fact]
-    public async Task QuerySalesOrders_RefusesWhenAllowSendLiveDataToAiTrue()
+    public async Task QueryCrm_RefusesWhenAllowSendLiveDataToAiTrue_OnDynamics()
     {
         var options = Options.Create(new CrmOptions
         {
+            Provider = "Dynamics365",
+            EnableLiveIntegration = true,
+            BaseUrl = "https://example.invalid/api/data/v9.1/",
             AllowSendLiveDataToAi = true,
             MaxPageSize = 25,
-            DefaultPageSize = 10
+            DefaultPageSize = 10,
+            ApprovedEntities = ["account", "contact", "salesorder"]
         });
 
-        var tools = new CrmAiTools(
-            new FakeDynamicsProvider(),
-            new CrmAuthorizationService(options, NullLogger<CrmAuthorizationService>.Instance),
-            new CrmArgumentValidator(options),
-            options,
-            NullLogger<CrmAiTools>.Instance);
+        var policy = new EntityApprovalPolicy(options);
+        var registry = new CrmMetadataRegistry();
+        var metadata = new MockCrmMetadataService(registry, policy);
+        var builder = new GenericCrmQueryBuilder(options);
+        var auth = new CrmAuthorizationService(options, NullLogger<CrmAuthorizationService>.Instance, policy);
+        var repo = new MockGenericCrmRepository(metadata, policy, builder, auth);
 
-        var json = await tools.query_sales_orders(limit: 5);
+        var tools = new CrmAiTools(
+            repo,
+            options,
+            NullLogger<CrmAiTools>.Instance,
+            metadata);
+
+        var json = await tools.query_crm(entity: "salesorder", operation: "list", limit: 5);
         Assert.Contains("\"error\":true", json.Replace(" ", string.Empty), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void Builder_RejectsArbitraryODataFragmentAsField()
+    public void GenericBuilder_RejectsArbitraryODataFragmentAsField()
     {
-        var builder = new SalesOrderODataQueryBuilder(Options.Create(new CrmOptions()));
-        var result = builder.Build(new SalesOrderQueryPlan
-        {
-            Filters =
-            [
-                new SalesOrderQueryFilter
-                {
-                    Field = "name eq 'x') or (1 eq 1",
-                    Operator = SalesOrderFilterOperator.Eq,
-                    Value = "y"
-                }
-            ]
-        });
+        var options = Options.Create(new CrmOptions());
+        var policy = new EntityApprovalPolicy(options);
+        var entity = StaticSeedCrmMetadata.CreateApprovedSeeds(policy).First(e => e.LogicalName == "salesorder");
+        var built = new GenericCrmQueryBuilder(options).Build(
+            new CrmQueryPlan
+            {
+                Entity = "salesorder",
+                Filters =
+                [
+                    new CrmQueryFilter
+                    {
+                        Field = "name eq 'x') or (1 eq 1",
+                        Operator = CrmFilterOperator.Eq,
+                        Value = "y"
+                    }
+                ]
+            },
+            entity);
 
-        Assert.False(result.Success);
-    }
-
-    private sealed class FakeDynamicsProvider : CrmAiPoc.Api.Crm.ICrmDataProvider
-    {
-        public string ProviderName => "Dynamics365";
-
-        public Task<CrmAiPoc.Api.Crm.Models.CrmQueryResult<CrmAiPoc.Api.Crm.Models.CrmAccount>> SearchAccountsAsync(
-            string name, int limit, CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
-        public Task<CrmAiPoc.Api.Crm.Models.CrmQueryResult<CrmAiPoc.Api.Crm.Models.CrmContact>> GetContactsForAccountAsync(
-            Guid accountId, int limit, CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
-        public Task<int> CountAccountsAsync(CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
-        public Task<CrmAiPoc.Api.Crm.Models.CrmQueryResult<CrmAiPoc.Api.Crm.Models.CrmSalesOrder>> GetSalesOrdersAsync(
-            int limit, CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
-        public Task<SalesOrderQueryExecutionResult> QuerySalesOrdersAsync(
-            SalesOrderQueryPlan plan,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException("Should not execute when AllowSendLiveDataToAi=true.");
+        Assert.False(built.Success);
     }
 }

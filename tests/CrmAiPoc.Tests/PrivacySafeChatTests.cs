@@ -1,5 +1,5 @@
 using CrmAiPoc.Api.Ai;
-using CrmAiPoc.Api.Crm.Models;
+using CrmAiPoc.Api.Crm.Generic;
 using Microsoft.Extensions.AI;
 
 namespace CrmAiPoc.Tests;
@@ -7,47 +7,58 @@ namespace CrmAiPoc.Tests;
 public class PrivacySafeChatTests
 {
     [Fact]
-    public void LocalFormatter_Arabic_SalesOrders()
+    public void GenericFormatter_Arabic_SalesOrders()
     {
-        var text = LocalCrmReplyFormatter.FormatSalesOrders(
-            [
-                new CrmSalesOrder
-                {
-                    SalesOrderId = Guid.NewGuid(),
-                    Name = "طلب تجريبي",
-                    OrderNumber = "ORD-1",
-                    CreatedOn = DateTimeOffset.Parse("2026-10-01")
-                }
-            ],
-            5,
+        var text = GenericCrmReplyFormatter.Format(
+            new GenericCrmQueryResult
+            {
+                Entity = "salesorder",
+                Operation = CrmQueryOperation.List,
+                RelativeRequestUri = "salesorders?$top=5",
+                Limit = 5,
+                ProviderName = "Dynamics365",
+                Items =
+                [
+                    new Dictionary<string, object?>
+                    {
+                        ["name"] = "طلب تجريبي",
+                        ["ordernumber"] = "ORD-1",
+                        ["createdon"] = DateTimeOffset.Parse("2026-10-01")
+                    }
+                ]
+            },
             "ar",
-            "Dynamics365",
             Guid.Parse("b1335b28-556d-f111-afc3-005056b70b06"));
 
-        Assert.Contains("أوامر بيع", text);
+        Assert.Contains("salesorder", text);
         Assert.Contains("ORD-1", text);
         Assert.Contains("لم تُرسل", text);
     }
 
     [Fact]
-    public void LocalFormatter_English_SalesOrders()
+    public void GenericFormatter_English_SalesOrders()
     {
-        var text = LocalCrmReplyFormatter.FormatSalesOrders(
-            [
-                new CrmSalesOrder
-                {
-                    SalesOrderId = Guid.NewGuid(),
-                    Name = "Demo",
-                    OrderNumber = "ORD-2",
-                    CreatedOn = DateTimeOffset.UtcNow
-                }
-            ],
-            5,
-            "en",
-            "Dynamics365",
-            null);
+        var text = GenericCrmReplyFormatter.Format(
+            new GenericCrmQueryResult
+            {
+                Entity = "salesorder",
+                Operation = CrmQueryOperation.List,
+                RelativeRequestUri = "salesorders?$top=5",
+                Limit = 5,
+                ProviderName = "Dynamics365",
+                Items =
+                [
+                    new Dictionary<string, object?>
+                    {
+                        ["name"] = "Demo",
+                        ["ordernumber"] = "ORD-2",
+                        ["createdon"] = DateTimeOffset.UtcNow
+                    }
+                ]
+            },
+            "en");
 
-        Assert.Contains("sales order", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("salesorder", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("were not sent to the AI model", text);
     }
 

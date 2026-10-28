@@ -1,5 +1,4 @@
 using CrmAiPoc.Api.Configuration;
-using CrmAiPoc.Api.Crm;
 using CrmAiPoc.Api.Crm.Dynamics;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
@@ -45,7 +44,6 @@ public static class CrmDiagnosticsEndpoints
 
         group.MapGet("/diagnostics/salesorder-schema", async (
             DynamicsSchemaDiscoveryService discovery,
-            ICrmDataProvider provider,
             IHostEnvironment env,
             CancellationToken cancellationToken) =>
         {
@@ -53,15 +51,6 @@ public static class CrmDiagnosticsEndpoints
             if (!result.Success)
             {
                 return Results.Json(result, statusCode: StatusCodes.Status503ServiceUnavailable);
-            }
-
-            if (provider is Dynamics365CrmProvider dynamics)
-            {
-                dynamics.ApplyDiscoveredSalesOrderSchema(
-                    result.EntitySetName!,
-                    result.PrimaryIdAttribute!,
-                    result.PrimaryNameAttribute!,
-                    result.RecommendedSelectFields);
             }
 
             if (!string.IsNullOrWhiteSpace(result.MarkdownReport))
@@ -94,53 +83,39 @@ public static class CrmDiagnosticsEndpoints
 
         group.MapGet("/salesorders", async (
             int? limit,
-            bool? live,
-            ICrmDataProvider provider,
-            Dynamics365CrmProvider dynamicsProvider,
+            IGenericCrmRepository repository,
             ICrmAuthorizationService auth,
             CrmArgumentValidator validator,
-            IOptions<CrmOptions> crmOptions,
+            ICrmMetadataService metadata,
             CancellationToken cancellationToken) =>
         {
-            var decision = auth.AuthorizeRead(CrmEntityAllowlist.SalesOrder, "get_sales_orders");
+            var decision = auth.AuthorizeRead(CrmEntityAllowlist.SalesOrder, "query_crm");
             if (!decision.Allowed)
             {
                 return Results.Json(new { error = decision.Reason }, statusCode: StatusCodes.Status403Forbidden);
             }
 
-            var opts = crmOptions.Value;
-            var useLive = live == true || (opts.EnableLiveIntegration && opts.IsDynamicsProvider);
-            ICrmDataProvider active = useLive ? dynamicsProvider : provider;
-
-            if (useLive && !opts.EnableLiveIntegration)
-            {
-                return Results.Json(
-                    new { error = "Live CRM retrieval requires Crm:EnableLiveIntegration=true." },
-                    statusCode: StatusCodes.Status503ServiceUnavailable);
-            }
-
+            await metadata.EnsureApprovedEntitiesLoadedAsync(cancellationToken);
             var safeLimit = validator.ClampLimit(limit);
-            var result = await active.GetSalesOrdersAsync(safeLimit, cancellationToken);
+            var result = await repository.QueryAsync(new CrmQueryPlan
+            {
+                Entity = "salesorder",
+                Operation = CrmQueryOperation.List,
+                Sort =
+                [
+                    new CrmQuerySort { Field = "createdon", Direction = CrmSortDirection.Desc }
+                ],
+                Limit = safeLimit
+            }, cancellationToken);
 
-            // Backend-only retrieval. This endpoint stays on the server side of the AI boundary.
             return Results.Ok(new
             {
-                provider = active.ProviderName,
-                liveRequested = useLive,
+                provider = result.ProviderName,
                 limit = safeLimit,
-                totalMatched = result.TotalMatched,
-                allowSendLiveDataToAi = opts.AllowSendLiveDataToAi,
+                totalReturned = result.Items.Count,
+                relativeRequestUri = result.RelativeRequestUri,
                 note = result.Message,
-                salesOrders = result.Items.Select(o => new
-                {
-                    o.SalesOrderId,
-                    o.Name,
-                    o.OrderNumber,
-                    o.CustomerAccountId,
-                    o.CreatedOn,
-                    o.StatusCode,
-                    o.StateCode
-                })
+                salesOrders = result.Items
             });
         })
         .WithName("CrmGetSalesOrders");

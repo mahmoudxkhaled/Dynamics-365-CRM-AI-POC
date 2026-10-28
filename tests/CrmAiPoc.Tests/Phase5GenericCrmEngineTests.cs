@@ -3,7 +3,6 @@ using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
 using CrmAiPoc.Api.Crm.Mock;
-using CrmAiPoc.Api.Crm.Validation;
 using CrmAiPoc.Api.Security;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -28,12 +27,9 @@ public class Phase5GenericCrmEngineTests
         var auth = new CrmAuthorizationService(options, NullLogger<CrmAuthorizationService>.Instance, policy);
         var repo = new MockGenericCrmRepository(metadata, policy, builder, auth);
         var tools = new CrmAiTools(
-            new MockCrmDataProvider(NullLogger<MockCrmDataProvider>.Instance, options),
-            auth,
-            new CrmArgumentValidator(options),
+            repo,
             options,
             NullLogger<CrmAiTools>.Instance,
-            repo,
             metadata);
         return (policy, registry, metadata, repo, tools);
     }

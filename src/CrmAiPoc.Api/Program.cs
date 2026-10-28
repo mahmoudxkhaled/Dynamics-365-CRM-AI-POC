@@ -1,10 +1,8 @@
 using CrmAiPoc.Api.Ai;
 using CrmAiPoc.Api.Configuration;
-using CrmAiPoc.Api.Crm;
 using CrmAiPoc.Api.Crm.Dynamics;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
-using CrmAiPoc.Api.Crm.Mock;
 using CrmAiPoc.Api.Crm.Validation;
 using CrmAiPoc.Api.Diagnostics;
 using CrmAiPoc.Api.Endpoints;
@@ -90,7 +88,7 @@ builder.Services.AddSwaggerGen(c =>
     {
         Title = "CRM AI POC API",
         Version = "v1",
-        Description = "Read-only Dynamics 365 CRM assistant POC. AI providers via Ai:Provider; CRM via Crm:Provider=Mock|Dynamics365."
+        Description = "Read-only Dynamics 365 CRM assistant POC. AI via Ai:Provider; CRM data via Crm:Provider=Mock|Dynamics365 (generic query engine)."
     });
 });
 
@@ -127,7 +125,6 @@ builder.Services.AddHttpClient(DynamicsCrmHttp.HttpClientName, (sp, client) =>
 builder.Services.AddSingleton<DynamicsCrmHttp>();
 builder.Services.AddSingleton<DynamicsConnectivityService>();
 builder.Services.AddSingleton<DynamicsSchemaDiscoveryService>();
-builder.Services.AddSingleton<Dynamics365CrmProvider>();
 
 var crmOptions = builder.Configuration.GetSection(CrmOptions.SectionName).Get<CrmOptions>() ?? new CrmOptions();
 var crmProviderName = (crmOptions.Provider ?? "Mock").Trim();
@@ -141,13 +138,11 @@ if (crmOptions.IsDynamicsProvider)
             "Use Crm:Provider=Mock for local POC without live CRM.");
     }
 
-    builder.Services.AddSingleton<ICrmDataProvider>(sp => sp.GetRequiredService<Dynamics365CrmProvider>());
     builder.Services.AddSingleton<ICrmMetadataService, DynamicsCrmMetadataService>();
     builder.Services.AddSingleton<IGenericCrmRepository, DynamicsGenericCrmRepository>();
 }
 else
 {
-    builder.Services.AddSingleton<ICrmDataProvider, MockCrmDataProvider>();
     builder.Services.AddSingleton<ICrmMetadataService, MockCrmMetadataService>();
     builder.Services.AddSingleton<IGenericCrmRepository, MockGenericCrmRepository>();
 }

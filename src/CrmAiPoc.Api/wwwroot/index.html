@@ -128,29 +128,38 @@
     .msg.plain { white-space: pre-wrap; }
     .msg.user { align-self: flex-end; background: var(--user); white-space: pre-wrap; cursor: pointer; }
     .msg.user.active-trace { outline: 2px solid var(--accent); }
-    .msg.assistant { align-self: flex-start; background: var(--bot); max-width: 100%; width: min(100%, 920px); }
+    .msg.assistant { align-self: flex-start; background: var(--bot); max-width: 100%; width: min(100%, 1100px); }
+    .msg.assistant.has-table { width: min(100%, 100%); max-width: 100%; }
     .msg.meta { align-self: center; color: var(--muted); border: none; font-size: 0.82rem; white-space: pre-wrap; }
     .msg.rtl { direction: rtl; text-align: right; }
     .msg-summary { margin: 0 0 10px; white-space: pre-wrap; }
     .msg-meta-lines { margin-top: 10px; color: var(--muted); font-size: 0.85rem; white-space: pre-wrap; }
     .table-wrap {
       overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
       border: 1px solid var(--border);
       border-radius: 8px;
       background: var(--head);
+      direction: ltr;
+      text-align: left;
+      max-width: 100%;
     }
     table.crm-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.9rem;
-      min-width: 480px;
+      width: max-content;
+      min-width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      table-layout: auto;
+      font-size: 0.88rem;
     }
     table.crm-table th, table.crm-table td {
-      padding: 8px 10px;
+      padding: 8px 12px;
       border-bottom: 1px solid var(--border);
-      text-align: start;
+      text-align: left;
       vertical-align: top;
       white-space: nowrap;
+      direction: ltr;
+      unicode-bidi: isolate;
     }
     table.crm-table th {
       background: #0f1a2e;
@@ -158,10 +167,28 @@
       font-weight: 600;
       position: sticky;
       top: 0;
+      z-index: 1;
     }
     table.crm-table tbody tr:nth-child(even) { background: var(--row-alt); }
     table.crm-table tbody tr:hover { background: #1a2740; }
-    table.crm-table td.wrap { white-space: normal; max-width: 220px; word-break: break-word; }
+    table.crm-table th.col-text,
+    table.crm-table td.col-text {
+      white-space: normal;
+      min-width: 140px;
+      max-width: 280px;
+      overflow-wrap: break-word;
+      word-break: normal;
+    }
+    table.crm-table th.col-num,
+    table.crm-table td.col-num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    table.crm-table th.col-empty,
+    table.crm-table td.col-empty {
+      color: var(--muted);
+      min-width: 72px;
+    }
     .count-badge {
       display: inline-block;
       margin: 4px 0 8px;
@@ -418,18 +445,53 @@
       return String(value ?? "")
         .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
     }
-    function formatCell(key, value) {
+    function isGuidLike(value) {
+      return typeof value === "string" &&
+        /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(value.trim());
+    }
+    function formatCell(key, value, kind) {
       if (value === null || value === undefined || value === "") return "—";
-      if (typeof value === "number") {
-        if (/amount|price|revenue|total/i.test(key)) {
-          return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const kindNorm = String(kind || "").toLowerCase();
+      if (["lookup", "customer", "owner", "uniqueidentifier", "guid"].includes(kindNorm) || isGuidLike(value)) {
+        // Raw lookup/GUID values are not useful without formatted annotations.
+        if (isGuidLike(value) || (typeof value === "string" && isGuidLike(String(value)))) return "—";
+      }
+      if (kindNorm === "money" || (typeof value === "number" && /amount|price|revenue|total/i.test(key || ""))) {
+        const n = Number(value);
+        if (!Number.isNaN(n)) {
+          return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         }
-        return value.toLocaleString();
       }
-      if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value)) {
-        try { return new Date(value).toISOString().slice(0, 10); } catch { return value; }
+      if (kindNorm === "datetime" || (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value))) {
+        try { return new Date(value).toISOString().slice(0, 10); } catch { /* fall through */ }
       }
+      if (kindNorm === "boolean") {
+        if (value === true || value === "true") return "true";
+        if (value === false || value === "false") return "false";
+      }
+      if (typeof value === "number") return value.toLocaleString();
       return String(value);
+    }
+    function resolveCellValue(row, column) {
+      if (!row || !column) return { value: null, kind: column && column.kind };
+      const key = column.key;
+      if (Object.prototype.hasOwnProperty.call(row, key) && row[key] != null && row[key] !== "") {
+        return { value: row[key], kind: column.kind };
+      }
+      // Choice columns use *_label; fall back to raw code when label missing.
+      if (typeof key === "string" && key.endsWith("_label")) {
+        const raw = key.slice(0, -"_label".length);
+        if (Object.prototype.hasOwnProperty.call(row, raw)) return { value: row[raw], kind: column.kind };
+      }
+      // Formatted annotation companion.
+      if (typeof key === "string" && key.endsWith("_formatted")) {
+        const raw = key.slice(0, -"_formatted".length);
+        if (Object.prototype.hasOwnProperty.call(row, raw)) return { value: row[raw], kind: column.kind };
+      }
+      if (column.logicalName && Object.prototype.hasOwnProperty.call(row, column.logicalName)) {
+        return { value: row[column.logicalName], kind: column.kind };
+      }
+      return { value: row[key], kind: column.kind };
     }
     function niceHeader(key) {
       const map = {
@@ -445,7 +507,7 @@
         jobtitle: "Job title", jobTitle: "Job title",
         address1_city: "City", address1_country: "Country"
       };
-      return map[key] || key.replace(/^_/, "").replace(/_value$/, "").replaceAll("_", " ");
+      return map[key] || key.replace(/^_/, "").replace(/_value$/, "").replace(/_label$/, "").replaceAll("_", " ");
     }
     function extractRows(structured) {
       if (!structured || typeof structured !== "object") return [];
@@ -455,11 +517,22 @@
       if (Array.isArray(structured.contacts)) return structured.contacts;
       return [];
     }
+    function normalizeMetadataColumns(structured) {
+      if (!structured || !Array.isArray(structured.columns) || structured.columns.length === 0) return null;
+      return structured.columns
+        .filter(c => c && c.key)
+        .map(c => ({
+          key: String(c.key),
+          label: (c.label && String(c.label).trim()) || niceHeader(String(c.key)),
+          kind: c.kind ? String(c.kind) : "",
+          logicalName: c.logicalName ? String(c.logicalName) : ""
+        }));
+    }
     function pickColumns(rows) {
       if (!rows.length) return [];
       const keys = new Set();
       rows.forEach(row => Object.keys(row || {}).forEach(k => {
-        if (!HIDDEN_KEYS.has(k.toLowerCase()) && !k.startsWith("@")) keys.add(k);
+        if (!HIDDEN_KEYS.has(k.toLowerCase()) && !k.startsWith("@") && !k.endsWith("_formatted")) keys.add(k);
       }));
       const preferred = COLUMN_PRIORITY.filter(k => [...keys].some(x => x.toLowerCase() === k));
       const resolvedPreferred = preferred.map(p => [...keys].find(x => x.toLowerCase() === p)).filter(Boolean);
@@ -467,23 +540,82 @@
       const withoutRawCodes = rest.filter(k => {
         const lower = k.toLowerCase();
         if ((lower === "statecode" || lower === "statuscode") &&
-            resolvedPreferred.some(p => p.toLowerCase() === lower + "_label")) return false;
+            [...keys].some(p => p.toLowerCase() === lower + "_label")) return false;
         return true;
       });
-      return [...resolvedPreferred, ...withoutRawCodes].slice(0, 8);
+      return [...resolvedPreferred, ...withoutRawCodes].slice(0, 8).map(k => ({
+        key: k,
+        label: niceHeader(k),
+        kind: "",
+        logicalName: k
+      }));
     }
-    function buildTableHtml(rows) {
-      const cols = pickColumns(rows);
+    function columnClass(column, sampleText) {
+      const kind = String(column.kind || "").toLowerCase();
+      const key = `${column.key || ""} ${column.logicalName || ""}`;
+      if (["money", "integer", "decimal"].includes(kind)) return "col-num";
+      if (["datetime", "boolean", "status", "state", "picklist"].includes(kind)) return "";
+      if (/amount|price|revenue|total/i.test(key)) return "col-num";
+      if (/name|fullname|email|job|city|country|subject|description/i.test(key) || kind === "string" || kind === "memo") {
+        return "col-text";
+      }
+      if (sampleText === "—" || sampleText === "") return "col-empty";
+      return "";
+    }
+    function isLookupishColumn(c) {
+      const kind = String(c.kind || "").toLowerCase();
+      return ["lookup", "customer", "owner", "uniqueidentifier", "guid"].includes(kind) ||
+        /_value$/i.test(c.key || "") ||
+        /customerid|parentcustomer/i.test(`${c.key || ""} ${c.logicalName || ""}`);
+    }
+    function dropAllEmptyLookupColumns(cols, rows) {
+      if (!rows.length) return cols;
+      return cols.filter(c => {
+        if (!isLookupishColumn(c)) return true;
+        return rows.some(row => {
+          const resolved = resolveCellValue(row, c);
+          const text = formatCell(c.key, resolved.value, resolved.kind || c.kind);
+          return text && text !== "—";
+        });
+      });
+    }
+    function buildTableHtml(rows, structured) {
+      const metaCols = normalizeMetadataColumns(structured);
+      let cols = metaCols && metaCols.length ? metaCols : pickColumns(rows);
+      cols = dropAllEmptyLookupColumns(cols, rows);
       if (!cols.length) return "";
-      const head = cols.map(c => `<th>${escapeHtml(niceHeader(c))}</th>`).join("");
-      const body = rows.map(row => {
-        const tds = cols.map(c => {
-          const wrap = /name|fullname|email|job|city|country/i.test(c) ? " wrap" : "";
-          return `<td class="${wrap}">${escapeHtml(formatCell(c, row[c]))}</td>`;
-        }).join("");
-        return `<tr>${tds}</tr>`;
+      // Prefer primary name / identity columns on the left for readable LTR tables.
+      const ordered = prioritizeDisplayColumns(cols);
+      const head = ordered.map(c => {
+        const cls = columnClass(c, "");
+        return `<th class="${cls}">${escapeHtml(c.label || niceHeader(c.key))}</th>`;
       }).join("");
-      return `<div class="table-wrap"><table class="crm-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+      const body = rows.length
+        ? rows.map(row => {
+            const tds = ordered.map(c => {
+              const resolved = resolveCellValue(row, c);
+              const text = formatCell(c.key, resolved.value, resolved.kind || c.kind);
+              const cls = columnClass(c, text);
+              return `<td class="${cls}">${escapeHtml(text || "—")}</td>`;
+            }).join("");
+            return `<tr>${tds}</tr>`;
+          }).join("")
+        : `<tr><td colspan="${ordered.length}">—</td></tr>`;
+      return `<div class="table-wrap" dir="ltr"><table class="crm-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+    }
+    function prioritizeDisplayColumns(cols) {
+      const score = (c) => {
+        const k = `${c.key || ""} ${c.logicalName || ""}`.toLowerCase();
+        if (/^(name|fullname|subject)$/.test((c.logicalName || c.key || "").toLowerCase())) return 0;
+        if (/ordernumber|accountnumber/.test(k)) return 1;
+        if (/createdon|modifiedon/.test(k)) return 2;
+        if (/status|state/.test(k)) return 3;
+        if (/amount|total|price/.test(k)) return 4;
+        if (/email|telephone|phone|job/.test(k)) return 5;
+        if (/_value$|customer|parent/.test(k)) return 9;
+        return 6;
+      };
+      return [...cols].sort((a, b) => score(a) - score(b));
     }
     function summaryFromReply(reply) {
       const lines = String(reply || "").split(/\r?\n/);
@@ -516,12 +648,20 @@
         div.innerHTML =
           `<div class="count-badge">${ar ? "العدد" : "Count"}: ${escapeHtml(structured.count)}${capped}</div>` +
           `<div class="msg-meta-lines">${escapeHtml(summaryFromReply(reply))}</div>`;
-      } else if (rows.length > 0) {
+      } else if (rows.length > 0 || (normalizeMetadataColumns(structured) && structured.operation === "list")) {
         const summary = summaryFromReply(reply);
+        const summaryLines = summary.split("\n");
+        const summaryDir = ar ? ' dir="rtl"' : "";
+        div.classList.add("has-table");
+        // Keep Arabic summary RTL, but never flip the CRM data table (dir=ltr on .table-wrap).
         div.innerHTML =
-          (summary ? `<p class="msg-summary">${escapeHtml(summary.split("\n")[0] || summary)}</p>` : "") +
-          buildTableHtml(rows) +
-          `<div class="msg-meta-lines">${escapeHtml(summary.split("\n").slice(1).join("\n"))}</div>`;
+          (summary
+            ? `<p class="msg-summary"${summaryDir}>${escapeHtml(summaryLines[0] || summary)}</p>`
+            : "") +
+          buildTableHtml(rows, structured) +
+          `<div class="msg-meta-lines"${summaryDir}>${escapeHtml(summaryLines.slice(1).join("\n"))}</div>`;
+        div.classList.remove("rtl");
+        div.removeAttribute("dir");
       } else {
         div.classList.add("plain");
         div.textContent = reply;

@@ -600,6 +600,13 @@ public sealed partial class ChatService
                 limit = result.Limit,
                 count = result.Count,
                 countMayBeCapped = result.CountMayBeCapped,
+                columns = result.Columns.Select(c => new
+                {
+                    key = c.Key,
+                    label = c.Label,
+                    kind = c.Kind,
+                    logicalName = c.LogicalName
+                }),
                 records = result.Items
             },
             whoAmI: whoAmIUserId,

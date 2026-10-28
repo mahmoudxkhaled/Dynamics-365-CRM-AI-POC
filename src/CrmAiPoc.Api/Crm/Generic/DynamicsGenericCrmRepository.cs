@@ -218,7 +218,9 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
                     : null,
                 ProviderName = ProviderName,
                 PrimaryIdAttribute = entity.PrimaryIdAttribute,
-                PrimaryNameAttribute = entity.PrimaryNameAttribute
+                PrimaryNameAttribute = entity.PrimaryNameAttribute,
+                SelectFields = built.SelectFields,
+                Columns = CrmTableColumnBuilder.Build(entity, built.SelectFields)
             };
         }
 
@@ -253,7 +255,9 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
             Message = items.Count == 0 ? "No records matched the query." : null,
             ProviderName = ProviderName,
             PrimaryIdAttribute = entity.PrimaryIdAttribute,
-            PrimaryNameAttribute = entity.PrimaryNameAttribute
+            PrimaryNameAttribute = entity.PrimaryNameAttribute,
+            SelectFields = built.SelectFields,
+            Columns = CrmTableColumnBuilder.Build(entity, built.SelectFields, items)
         };
     }
 
@@ -319,8 +323,26 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
         foreach (var item in values.EnumerateArray())
         {
             var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            var formattedByField = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
             foreach (var prop in item.EnumerateObject())
             {
+                // Capture Dynamics formatted-value annotations when Prefer returned them.
+                // Example: totalamount@OData.Community.Display.V1.FormattedValue
+                var annotationField = TryGetFormattedValueAnnotationField(prop.Name);
+                if (annotationField is not null)
+                {
+                    var formatted = prop.Value.ValueKind == JsonValueKind.String
+                        ? prop.Value.GetString()
+                        : prop.Value.ToString();
+                    if (!string.IsNullOrWhiteSpace(formatted))
+                    {
+                        formattedByField[annotationField] = formatted!;
+                    }
+
+                    continue;
+                }
+
                 if (prop.Name.StartsWith('@'))
                 {
                     continue;
@@ -339,10 +361,32 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
                 }
             }
 
+            foreach (var kv in formattedByField)
+            {
+                row[kv.Key + "_formatted"] = kv.Value;
+            }
+
             list.Add(row);
         }
 
         return list;
+    }
+
+    private static string? TryGetFormattedValueAnnotationField(string propertyName)
+    {
+        const string community = "@OData.Community.Display.V1.FormattedValue";
+        const string microsoft = "@Microsoft.Dynamics.CRM.formattedvalue";
+        if (propertyName.EndsWith(community, StringComparison.OrdinalIgnoreCase))
+        {
+            return propertyName[..^community.Length];
+        }
+
+        if (propertyName.EndsWith(microsoft, StringComparison.OrdinalIgnoreCase))
+        {
+            return propertyName[..^microsoft.Length];
+        }
+
+        return null;
     }
 
     private static object? ConvertJson(JsonElement value) => value.ValueKind switch

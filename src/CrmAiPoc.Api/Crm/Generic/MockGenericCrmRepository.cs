@@ -169,11 +169,15 @@ public sealed class MockGenericCrmRepository : IGenericCrmRepository
                 Count = rows.Count,
                 ProviderName = ProviderName,
                 PrimaryIdAttribute = entity.PrimaryIdAttribute,
-                PrimaryNameAttribute = entity.PrimaryNameAttribute
+                PrimaryNameAttribute = entity.PrimaryNameAttribute,
+                SelectFields = built.SelectFields,
+                Columns = CrmTableColumnBuilder.Build(entity, built.SelectFields)
             };
         }
 
         rows = ApplySort(rows, plan, entity).Take(built.Limit).ToList();
+        // Project to validated $select keys so table columns align with the query plan.
+        rows = ProjectSelect(rows, built.SelectFields, entity);
         _tracer.SetCrmQuery(new
         {
             crmQuery.method,
@@ -201,8 +205,55 @@ public sealed class MockGenericCrmRepository : IGenericCrmRepository
             Message = rows.Count == 0 ? "No records matched the query." : null,
             ProviderName = ProviderName,
             PrimaryIdAttribute = entity.PrimaryIdAttribute,
-            PrimaryNameAttribute = entity.PrimaryNameAttribute
+            PrimaryNameAttribute = entity.PrimaryNameAttribute,
+            SelectFields = built.SelectFields,
+            Columns = CrmTableColumnBuilder.Build(entity, built.SelectFields, rows)
         };
+    }
+
+    private static List<IReadOnlyDictionary<string, object?>> ProjectSelect(
+        List<IReadOnlyDictionary<string, object?>> rows,
+        IReadOnlyList<string> selectFields,
+        CrmEntityMetadata entity)
+    {
+        if (selectFields.Count == 0 || rows.Count == 0)
+        {
+            return rows;
+        }
+
+        var projected = new List<IReadOnlyDictionary<string, object?>>(rows.Count);
+        foreach (var row in rows)
+        {
+            var next = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            foreach (var field in selectFields)
+            {
+                if (row.TryGetValue(field, out var value))
+                {
+                    next[field] = value;
+                }
+                else
+                {
+                    next[field] = null;
+                }
+
+                var labelKey = field + "_label";
+                if (row.TryGetValue(labelKey, out var label))
+                {
+                    next[labelKey] = label;
+                }
+                else if (entity.TryGetAttribute(field, out var attr) &&
+                         attr.Kind is CrmAttributeKind.Status or CrmAttributeKind.State or CrmAttributeKind.Picklist &&
+                         value is int code &&
+                         attr.OptionSetByValue.TryGetValue(code, out var mapped))
+                {
+                    next[labelKey] = mapped;
+                }
+            }
+
+            projected.Add(next);
+        }
+
+        return projected;
     }
 
     private static List<IReadOnlyDictionary<string, object?>> LoadRows(string logical) =>

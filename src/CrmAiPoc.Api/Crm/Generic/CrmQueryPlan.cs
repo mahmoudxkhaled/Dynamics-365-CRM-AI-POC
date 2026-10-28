@@ -90,4 +90,13 @@ public sealed class GenericCrmQueryResult
     public string ProviderName { get; init; } = "Dynamics365";
     public string? PrimaryNameAttribute { get; init; }
     public string? PrimaryIdAttribute { get; init; }
+
+    /// <summary>Validated $select OData property names used for the query.</summary>
+    public IReadOnlyList<string> SelectFields { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Dynamic table columns derived from metadata + <see cref="SelectFields"/>.
+    /// Preserved for zero-result list queries so the UI can still render headers.
+    /// </summary>
+    public IReadOnlyList<CrmTableColumn> Columns { get; init; } = Array.Empty<CrmTableColumn>();
 }

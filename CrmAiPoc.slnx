@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CrmAiPoc.Api/CrmAiPoc.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CrmAiPoc.Tests/CrmAiPoc.Tests.csproj" />
+  </Folder>
+</Solution>

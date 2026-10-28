@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CRM AI POC</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #0ea5e9;
+      --user: #164e63;
+      --bot: #1e293b;
+      --border: #334155;
+      --row-alt: #162032;
+      --head: #0b1220;
+      --ok: #22c55e;
+      --fail: #ef4444;
+      --run: #eab308;
+      --blocked: #f97316;
+      --pending: #64748b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      background: radial-gradient(circle at top left, #1e3a5f, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+      padding: 16px;
+    }
+    .app {
+      max-width: 1600px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      height: calc(100vh - 32px);
+    }
+    header h1 { margin: 0 0 4px; font-size: 1.35rem; }
+    header p { margin: 0; color: var(--muted); font-size: 0.9rem; }
+    .mobile-tabs {
+      display: none;
+      gap: 8px;
+    }
+    .mobile-tabs button {
+      flex: 1;
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .mobile-tabs button.active {
+      background: var(--accent);
+      color: #082f49;
+    }
+    .workspace {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 55%) 6px minmax(280px, 45%);
+      gap: 0;
+    }
+    .split-handle {
+      cursor: col-resize;
+      background: transparent;
+      position: relative;
+    }
+    .split-handle::after {
+      content: "";
+      position: absolute;
+      inset: 12% 2px;
+      border-radius: 4px;
+      background: var(--border);
+    }
+    .panel {
+      background: color-mix(in srgb, var(--panel) 90%, black);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .panel-head {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      background: var(--head);
+    }
+    .panel-head h2 {
+      margin: 0;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #7dd3fc;
+    }
+    .panel-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .panel-actions button, .inspector-btn {
+      padding: 6px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #0f1a2e;
+      color: var(--text);
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .panel-actions button:hover, .inspector-btn:hover { border-color: var(--accent); }
+    .chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .msg {
+      max-width: 92%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      line-height: 1.45;
+      border: 1px solid var(--border);
+    }
+    .msg.plain { white-space: pre-wrap; }
+    .msg.user { align-self: flex-end; background: var(--user); white-space: pre-wrap; cursor: pointer; }
+    .msg.user.active-trace { outline: 2px solid var(--accent); }
+    .msg.assistant { align-self: flex-start; background: var(--bot); max-width: 100%; width: min(100%, 920px); }
+    .msg.meta { align-self: center; color: var(--muted); border: none; font-size: 0.82rem; white-space: pre-wrap; }
+    .msg.rtl { direction: rtl; text-align: right; }
+    .msg-summary { margin: 0 0 10px; white-space: pre-wrap; }
+    .msg-meta-lines { margin-top: 10px; color: var(--muted); font-size: 0.85rem; white-space: pre-wrap; }
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--head);
+    }
+    table.crm-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      min-width: 480px;
+    }
+    table.crm-table th, table.crm-table td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      text-align: start;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+    table.crm-table th {
+      background: #0f1a2e;
+      color: #7dd3fc;
+      font-weight: 600;
+      position: sticky;
+      top: 0;
+    }
+    table.crm-table tbody tr:nth-child(even) { background: var(--row-alt); }
+    table.crm-table tbody tr:hover { background: #1a2740; }
+    table.crm-table td.wrap { white-space: normal; max-width: 220px; word-break: break-word; }
+    .count-badge {
+      display: inline-block;
+      margin: 4px 0 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: #0c4a6e;
+      color: #e0f2fe;
+      font-weight: 600;
+    }
+    .composer {
+      border-top: 1px solid var(--border);
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    form { display: flex; gap: 8px; }
+    input[type="text"] {
+      flex: 1;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      font-size: 1rem;
+      direction: ltr;
+      text-align: left;
+      unicode-bidi: plaintext;
+    }
+    input[type="text"].rtl { direction: rtl; text-align: right; }
+    button.send {
+      padding: 12px 18px;
+      border: none;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #082f49;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.send:disabled { opacity: 0.6; cursor: wait; }
+    .hints { color: var(--muted); font-size: 0.8rem; }
+    .hints code { color: #7dd3fc; }
+    .inspector-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .stat {
+      background: var(--head);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .stat .label { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .stat .value { margin-top: 4px; font-size: 0.88rem; word-break: break-all; font-family: Consolas, monospace; }
+    .status-pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
+    .status-Running { background: #422006; color: #fde68a; }
+    .status-Success { background: #052e16; color: #86efac; }
+    .status-Failed { background: #450a0a; color: #fecaca; }
+    .status-Blocked { background: #431407; color: #fdba74; }
+    .timeline { display: flex; flex-direction: column; gap: 8px; }
+    .step {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #0b1220;
+      overflow: hidden;
+    }
+    .step-head {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 8px 10px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .step-icon {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-top: 5px;
+      flex: 0 0 auto;
+    }
+    .icon-Pending { background: var(--pending); }
+    .icon-Running { background: var(--run); box-shadow: 0 0 0 3px rgba(234,179,8,.2); }
+    .icon-Success { background: var(--ok); }
+    .icon-Failed { background: var(--fail); }
+    .icon-Blocked { background: var(--blocked); }
+    .step-main { flex: 1; min-width: 0; }
+    .step-title { font-size: 0.86rem; font-weight: 600; }
+    .step-summary { color: var(--muted); font-size: 0.78rem; margin-top: 2px; word-break: break-word; }
+    .step-dur { color: #7dd3fc; font-size: 0.75rem; font-family: Consolas, monospace; white-space: nowrap; }
+    .step-body {
+      display: none;
+      border-top: 1px solid var(--border);
+      padding: 8px 10px;
+      background: #071018;
+    }
+    .step.open .step-body { display: block; }
+    .step-error { color: #fecaca; font-size: 0.8rem; margin-bottom: 6px; }
+    pre.json {
+      margin: 0;
+      padding: 8px;
+      border-radius: 6px;
+      background: #020617;
+      border: 1px solid var(--border);
+      overflow: auto;
+      max-height: 240px;
+      font-size: 0.72rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .section-title {
+      margin: 0;
+      font-size: 0.8rem;
+      color: #7dd3fc;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .empty-inspector {
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.5;
+      padding: 8px 0;
+    }
+    .collapsed-inspector .inspector-panel { display: none; }
+    .collapsed-inspector .workspace { grid-template-columns: 1fr; }
+    .collapsed-inspector .split-handle { display: none; }
+    @media (max-width: 900px) {
+      .app { height: auto; min-height: calc(100vh - 32px); }
+      .mobile-tabs { display: flex; }
+      .workspace {
+        display: block;
+        min-height: 70vh;
+      }
+      .split-handle { display: none; }
+      .chat-panel, .inspector-panel { min-height: 65vh; }
+      .workspace.show-inspector .chat-panel { display: none; }
+      .workspace:not(.show-inspector) .inspector-panel { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app" id="app">
+    <header>
+      <h1>Dynamics 365 CRM AI POC</h1>
+      <p>Read-only assistant — left: chat · right: live execution inspector (Groq tool call → generic OData → local reply)</p>
+    </header>
+    <div class="mobile-tabs">
+      <button type="button" id="tabChat" class="active">Chat</button>
+      <button type="button" id="tabInspector">Inspector</button>
+    </div>
+    <div class="workspace" id="workspace">
+      <section class="panel chat-panel">
+        <div class="panel-head">
+          <h2>AI Chat</h2>
+          <button type="button" class="inspector-btn" id="toggleInspector">Toggle inspector</button>
+        </div>
+        <div class="chat" id="chat"></div>
+        <div class="composer">
+          <form id="form">
+            <input id="message" type="text" placeholder="Ask about sales orders, accounts, contacts, leads..." autocomplete="off" required />
+            <button class="send" type="submit" id="send">Send</button>
+          </form>
+          <div class="hints">
+            Try: <code>Show me the latest 5 accounts</code> ·
+            <code>هاتلي آخر 5 Sales Orders</code> ·
+            <code>Delete all accounts</code>
+          </div>
+        </div>
+      </section>
+      <div class="split-handle" id="splitHandle" title="Drag to resize"></div>
+      <aside class="panel inspector-panel" id="inspectorPanel">
+        <div class="panel-head">
+          <h2>Execution Inspector</h2>
+          <div class="panel-actions">
+            <button type="button" id="copyQuery">Copy Query</button>
+            <button type="button" id="copyTrace">Copy Trace</button>
+            <button type="button" id="clearInspector">Clear</button>
+          </div>
+        </div>
+        <div class="inspector-body" id="inspectorBody">
+          <div class="empty-inspector" id="inspectorEmpty">
+            Send a chat message to capture a live execution trace. Click a previous user message to re-open its trace.
+          </div>
+          <div id="inspectorContent" hidden>
+            <div class="stat-grid">
+              <div class="stat"><div class="label">Execution ID</div><div class="value" id="statExecId">—</div></div>
+              <div class="stat"><div class="label">Status</div><div class="value" id="statStatus">—</div></div>
+              <div class="stat"><div class="label">Total time</div><div class="value" id="statTotal">—</div></div>
+              <div class="stat"><div class="label">AI / Model</div><div class="value" id="statAi">—</div></div>
+            </div>
+            <h3 class="section-title">AI tool request → backend</h3>
+            <pre class="json" id="toolJson">{}</pre>
+            <h3 class="section-title">CRM query</h3>
+            <pre class="json" id="queryJson">{}</pre>
+            <h3 class="section-title">Metrics</h3>
+            <pre class="json" id="metricsJson">{}</pre>
+            <h3 class="section-title">Timeline</h3>
+            <div class="timeline" id="timeline"></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+  <script>
+    const chat = document.getElementById("chat");
+    const form = document.getElementById("form");
+    const input = document.getElementById("message");
+    const send = document.getElementById("send");
+    const app = document.getElementById("app");
+    const workspace = document.getElementById("workspace");
+    const inspectorContent = document.getElementById("inspectorContent");
+    const inspectorEmpty = document.getElementById("inspectorEmpty");
+    const timeline = document.getElementById("timeline");
+    let conversationId = null;
+    let activeExecutionId = null;
+    let pollTimer = null;
+    let latestTrace = null;
+    const tracesByMessage = new Map();
+
+    const HIDDEN_KEYS = new Set([
+      "salesorderid", "accountid", "contactid", "leadid", "@odata.etag", "odata.etag"
+    ]);
+    const COLUMN_PRIORITY = [
+      "name", "fullName", "fullname", "orderNumber", "ordernumber", "accountNumber", "accountnumber",
+      "totalAmount", "totalamount", "createdOn", "createdon", "modifiedOn", "modifiedon",
+      "stateLabel", "statusLabel", "statecode_label", "statuscode_label", "stateCode", "statusCode", "statecode", "statuscode",
+      "emailAddress1", "emailaddress1", "telephone1", "jobTitle", "jobtitle",
+      "city", "address1_city", "country", "address1_country",
+      "customerAccountId", "_te_customeraccountid_value", "_customerid_value", "_parentcustomerid_value"
+    ];
+
+    function hasArabic(text) { return /[\u0600-\u06FF]/.test(text || ""); }
+    function syncInputDirection() {
+      input.classList.toggle("rtl", hasArabic(input.value));
+      input.setAttribute("dir", hasArabic(input.value) ? "rtl" : "ltr");
+    }
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+    }
+    function formatCell(key, value) {
+      if (value === null || value === undefined || value === "") return "—";
+      if (typeof value === "number") {
+        if (/amount|price|revenue|total/i.test(key)) {
+          return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+        return value.toLocaleString();
+      }
+      if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value)) {
+        try { return new Date(value).toISOString().slice(0, 10); } catch { return value; }
+      }
+      return String(value);
+    }
+    function niceHeader(key) {
+      const map = {
+        name: "Name", fullname: "Full name", fullName: "Full name",
+        ordernumber: "Order #", orderNumber: "Order #",
+        accountnumber: "Account #", accountNumber: "Account #",
+        totalamount: "Amount", totalAmount: "Amount",
+        createdon: "Created", createdOn: "Created",
+        modifiedon: "Modified", modifiedOn: "Modified",
+        statecode_label: "State", statuscode_label: "Status",
+        stateLabel: "State", statusLabel: "Status",
+        emailaddress1: "Email", emailAddress1: "Email", telephone1: "Phone",
+        jobtitle: "Job title", jobTitle: "Job title",
+        address1_city: "City", address1_country: "Country"
+      };
+      return map[key] || key.replace(/^_/, "").replace(/_value$/, "").replaceAll("_", " ");
+    }
+    function extractRows(structured) {
+      if (!structured || typeof structured !== "object") return [];
+      if (Array.isArray(structured.records)) return structured.records;
+      if (Array.isArray(structured.salesOrders)) return structured.salesOrders;
+      if (Array.isArray(structured.accounts)) return structured.accounts;
+      if (Array.isArray(structured.contacts)) return structured.contacts;
+      return [];
+    }
+    function pickColumns(rows) {
+      if (!rows.length) return [];
+      const keys = new Set();
+      rows.forEach(row => Object.keys(row || {}).forEach(k => {
+        if (!HIDDEN_KEYS.has(k.toLowerCase()) && !k.startsWith("@")) keys.add(k);
+      }));
+      const preferred = COLUMN_PRIORITY.filter(k => [...keys].some(x => x.toLowerCase() === k));
+      const resolvedPreferred = preferred.map(p => [...keys].find(x => x.toLowerCase() === p)).filter(Boolean);
+      const rest = [...keys].filter(k => !resolvedPreferred.some(p => p.toLowerCase() === k.toLowerCase()));
+      const withoutRawCodes = rest.filter(k => {
+        const lower = k.toLowerCase();
+        if ((lower === "statecode" || lower === "statuscode") &&
+            resolvedPreferred.some(p => p.toLowerCase() === lower + "_label")) return false;
+        return true;
+      });
+      return [...resolvedPreferred, ...withoutRawCodes].slice(0, 8);
+    }
+    function buildTableHtml(rows) {
+      const cols = pickColumns(rows);
+      if (!cols.length) return "";
+      const head = cols.map(c => `<th>${escapeHtml(niceHeader(c))}</th>`).join("");
+      const body = rows.map(row => {
+        const tds = cols.map(c => {
+          const wrap = /name|fullname|email|job|city|country/i.test(c) ? " wrap" : "";
+          return `<td class="${wrap}">${escapeHtml(formatCell(c, row[c]))}</td>`;
+        }).join("");
+        return `<tr>${tds}</tr>`;
+      }).join("");
+      return `<div class="table-wrap"><table class="crm-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+    }
+    function summaryFromReply(reply) {
+      const lines = String(reply || "").split(/\r?\n/);
+      return lines.filter(line => !/^\s*\d+\.\s+/.test(line)).join("\n").trim();
+    }
+    function addPlainMessage(role, text, executionId) {
+      const div = document.createElement("div");
+      div.className = "msg " + role + " plain" + (hasArabic(text) ? " rtl" : "");
+      if (hasArabic(text)) div.setAttribute("dir", "rtl");
+      div.textContent = text;
+      if (role === "user" && executionId) {
+        div.dataset.executionId = executionId;
+        div.addEventListener("click", () => selectExecution(executionId, div));
+      }
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+      return div;
+    }
+    function addAssistantResult(data) {
+      const reply = data.reply || "";
+      const structured = data.structuredData;
+      const rows = extractRows(structured);
+      const isCount = structured && (structured.operation === "count" || structured.count != null) && rows.length === 0;
+      const ar = hasArabic(reply);
+      const div = document.createElement("div");
+      div.className = "msg assistant" + (ar ? " rtl" : "");
+      if (ar) div.setAttribute("dir", "rtl");
+      if (isCount && structured.count != null) {
+        const capped = structured.countMayBeCapped ? (ar ? ` (على الأقل — قد يكون العدد أكبر)` : ` (at least — may be higher)`) : "";
+        div.innerHTML =
+          `<div class="count-badge">${ar ? "العدد" : "Count"}: ${escapeHtml(structured.count)}${capped}</div>` +
+          `<div class="msg-meta-lines">${escapeHtml(summaryFromReply(reply))}</div>`;
+      } else if (rows.length > 0) {
+        const summary = summaryFromReply(reply);
+        div.innerHTML =
+          (summary ? `<p class="msg-summary">${escapeHtml(summary.split("\n")[0] || summary)}</p>` : "") +
+          buildTableHtml(rows) +
+          `<div class="msg-meta-lines">${escapeHtml(summary.split("\n").slice(1).join("\n"))}</div>`;
+      } else {
+        div.classList.add("plain");
+        div.textContent = reply;
+      }
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    function pretty(obj) {
+      try { return JSON.stringify(obj ?? {}, null, 2); } catch { return String(obj); }
+    }
+
+    function renderTrace(trace) {
+      latestTrace = trace;
+      if (!trace) {
+        inspectorEmpty.hidden = false;
+        inspectorContent.hidden = true;
+        return;
+      }
+      inspectorEmpty.hidden = true;
+      inspectorContent.hidden = false;
+      document.getElementById("statExecId").textContent = trace.executionId || "—";
+      document.getElementById("statStatus").innerHTML =
+        `<span class="status-pill status-${escapeHtml(trace.status)}">${escapeHtml(trace.status)}</span>`;
+      document.getElementById("statTotal").textContent =
+        trace.totalDurationMs != null ? `${trace.totalDurationMs} ms` : "—";
+      document.getElementById("statAi").textContent =
+        `${trace.aiProvider || "?"} / ${trace.aiModel || "?"}`;
+      document.getElementById("toolJson").textContent = pretty({
+        tool: trace.selectedTool,
+        arguments: trace.toolArguments,
+        privacySafe: trace.privacySafe,
+        outboundContainedCrmRecords: trace.outboundContainedCrmRecords
+      });
+      document.getElementById("queryJson").textContent = pretty(trace.crmQuery || {});
+      document.getElementById("metricsJson").textContent = pretty(trace.metrics || {});
+
+      const openIds = new Set([...timeline.querySelectorAll(".step.open")].map(el => el.dataset.stepId));
+      timeline.innerHTML = "";
+      (trace.steps || []).forEach(step => {
+        const el = document.createElement("div");
+        el.className = "step" + (openIds.has(step.stepId) ? " open" : "");
+        el.dataset.stepId = step.stepId;
+        el.innerHTML =
+          `<div class="step-head">` +
+          `<span class="step-icon icon-${escapeHtml(step.status)}"></span>` +
+          `<div class="step-main"><div class="step-title">${escapeHtml(step.name)}</div>` +
+          `<div class="step-summary">${escapeHtml(step.summary || step.error || "")}</div></div>` +
+          `<div class="step-dur">${step.durationMs != null ? step.durationMs + " ms" : ""}</div>` +
+          `</div>` +
+          `<div class="step-body">` +
+          (step.error ? `<div class="step-error">${escapeHtml(step.error)}</div>` : "") +
+          `<pre class="json">${escapeHtml(pretty(step.details || {}))}</pre>` +
+          `</div>`;
+        el.querySelector(".step-head").addEventListener("click", () => el.classList.toggle("open"));
+        timeline.appendChild(el);
+      });
+    }
+
+    async function fetchTrace(executionId) {
+      const res = await fetch(`/api/diagnostics/executions/${encodeURIComponent(executionId)}`);
+      if (!res.ok) return null;
+      return res.json();
+    }
+
+    function stopPolling() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    function startPolling(executionId) {
+      stopPolling();
+      activeExecutionId = executionId;
+      const tick = async () => {
+        try {
+          const trace = await fetchTrace(executionId);
+          if (!trace) return;
+          tracesByMessage.set(executionId, trace);
+          renderTrace(trace);
+          if (trace.status !== "Running") stopPolling();
+        } catch { /* ignore transient poll errors */ }
+      };
+      tick();
+      pollTimer = setInterval(tick, 400);
+    }
+
+    function selectExecution(executionId, userEl) {
+      document.querySelectorAll(".msg.user").forEach(el => el.classList.remove("active-trace"));
+      if (userEl) userEl.classList.add("active-trace");
+      activeExecutionId = executionId;
+      const cached = tracesByMessage.get(executionId);
+      if (cached) renderTrace(cached);
+      startPolling(executionId);
+      if (window.matchMedia("(max-width: 900px)").matches) {
+        workspace.classList.add("show-inspector");
+        document.getElementById("tabInspector").classList.add("active");
+        document.getElementById("tabChat").classList.remove("active");
+      }
+    }
+
+    input.addEventListener("input", syncInputDirection);
+    input.addEventListener("paste", () => setTimeout(syncInputDirection, 0));
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+      const executionId = (crypto.randomUUID && crypto.randomUUID().replaceAll("-", "")) ||
+        (Date.now().toString(16) + Math.random().toString(16).slice(2));
+      const userEl = addPlainMessage("user", message, executionId);
+      userEl.classList.add("active-trace");
+      input.value = "";
+      syncInputDirection();
+      send.disabled = true;
+      startPolling(executionId);
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message, conversationId, executionId })
+        });
+        const text = await res.text();
+        let data = null;
+        try { data = text ? JSON.parse(text) : null; } catch { /* non-JSON */ }
+        if (!res.ok) {
+          addPlainMessage("assistant", (data && (data.error || data.detail || data.title)) || text || "Request failed.");
+        } else {
+          conversationId = data.conversationId;
+          const eid = data.executionId || executionId;
+          userEl.dataset.executionId = eid;
+          selectExecution(eid, userEl);
+          addAssistantResult(data);
+          if (data.privacySafeToolExecution) {
+            addPlainMessage("meta", "Privacy-safe: tool=" + (data.selectedTool || "?") +
+              "; CRM→AI records=" + (data.outboundAiContainedCrmRecords ? "YES" : "NO") +
+              (eid ? ("; exec=" + eid.slice(0, 8)) : "") +
+              (data.crmWhoAmIUserId ? ("; WhoAmI=" + data.crmWhoAmIUserId) : ""));
+          }
+        }
+      } catch (err) {
+        addPlainMessage("assistant", "Network error: " + err.message);
+      } finally {
+        send.disabled = false;
+        input.focus();
+      }
+    });
+
+    document.getElementById("clearInspector").addEventListener("click", () => {
+      stopPolling();
+      latestTrace = null;
+      activeExecutionId = null;
+      renderTrace(null);
+      document.querySelectorAll(".msg.user").forEach(el => el.classList.remove("active-trace"));
+    });
+
+    document.getElementById("copyQuery").addEventListener("click", async () => {
+      const q = latestTrace && latestTrace.crmQuery
+        ? (latestTrace.crmQuery.relativeRequestUri || latestTrace.crmQuery.readableQuery || pretty(latestTrace.crmQuery))
+        : "";
+      if (!q) return;
+      await navigator.clipboard.writeText(typeof q === "string" ? q : pretty(q));
+    });
+
+    document.getElementById("copyTrace").addEventListener("click", async () => {
+      if (!activeExecutionId) return;
+      const res = await fetch(`/api/diagnostics/executions/${encodeURIComponent(activeExecutionId)}/safe-text`);
+      const text = await res.text();
+      await navigator.clipboard.writeText(text);
+    });
+
+    document.getElementById("toggleInspector").addEventListener("click", () => {
+      app.classList.toggle("collapsed-inspector");
+    });
+
+    document.getElementById("tabChat").addEventListener("click", () => {
+      workspace.classList.remove("show-inspector");
+      document.getElementById("tabChat").classList.add("active");
+      document.getElementById("tabInspector").classList.remove("active");
+    });
+    document.getElementById("tabInspector").addEventListener("click", () => {
+      workspace.classList.add("show-inspector");
+      document.getElementById("tabInspector").classList.add("active");
+      document.getElementById("tabChat").classList.remove("active");
+    });
+
+    // Resizable split
+    const handle = document.getElementById("splitHandle");
+    let dragging = false;
+    handle.addEventListener("mousedown", (e) => {
+      dragging = true;
+      e.preventDefault();
+    });
+    window.addEventListener("mouseup", () => { dragging = false; });
+    window.addEventListener("mousemove", (e) => {
+      if (!dragging || window.matchMedia("(max-width: 900px)").matches) return;
+      const rect = workspace.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const pct = Math.min(75, Math.max(35, (x / rect.width) * 100));
+      workspace.style.gridTemplateColumns = `minmax(0, ${pct}%) 6px minmax(280px, ${100 - pct}%)`;
+    });
+
+    addPlainMessage("meta", "Conversation ready. Execution Inspector shows live Groq tool args + Dynamics OData path (sanitized).");
+  </script>
+</body>
+</html>

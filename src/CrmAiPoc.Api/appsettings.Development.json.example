@@ -1,0 +1,43 @@
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Debug",
+      "Microsoft.AspNetCore": "Information",
+      "CrmAiPoc.Api": "Debug"
+    }
+  },
+  "Ai": {
+    "Provider": "Groq"
+  },
+  "Gemini": {
+    "ApiKey": "",
+    "ModelName": "gemini-3.8-flash"
+  },
+  "OpenAI": {
+    "ApiKey": "",
+    "ModelName": "gpt-4o-mini"
+  },
+  "Groq": {
+    "ApiKey": "",
+    "ModelName": "openai/gpt-oss-120b",
+    "BaseUrl": "https://api.groq.com/openai/v1"
+  },
+  "Crm": {
+    "Provider": "Dynamics365",
+    "EnableLiveIntegration": true,
+    "BaseUrl": "https://YOUR-CRM-HOST/ORG/api/data/v9.1/",
+    "UseDefaultCredentials": true,
+    "AllowSendLiveDataToAi": false,
+    "RestrictToLoopback": true,
+    "EnableExecutionInspector": true,
+    "BusinessTimeZoneId": "Africa/Cairo",
+    "MetadataCacheSeconds": 3600,
+    "ApprovedEntities": [ "account", "contact", "salesorder", "lead" ],
+    "EntityAliases": {
+      "account": [ "accounts", "customers" ],
+      "contact": [ "contacts" ],
+      "salesorder": [ "sales order", "sales orders" ],
+      "lead": [ "leads" ]
+    }
+  }
+}

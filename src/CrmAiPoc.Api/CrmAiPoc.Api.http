@@ -1,0 +1,53 @@
+@CrmAiPoc.Api_HostAddress = http://localhost:5138
+
+### Health
+GET {{CrmAiPoc.Api_HostAddress}}/api/health
+
+### Search accounts (English)
+POST {{CrmAiPoc.Api_HostAddress}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Show me accounts containing Ahmed"
+}
+
+### Count accounts (Arabic)
+POST {{CrmAiPoc.Api_HostAddress}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "كم عدد العملاء الموجودين؟"
+}
+
+### Follow-up contacts (set conversationId from prior response)
+POST {{CrmAiPoc.Api_HostAddress}}/api/chat
+Content-Type: application/json
+
+{
+  "conversationId": "REPLACE_ME",
+  "message": "Show me contacts for this account."
+}
+
+### Destructive request (must refuse)
+POST {{CrmAiPoc.Api_HostAddress}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Delete all accounts."
+}
+
+### Out of scope
+POST {{CrmAiPoc.Api_HostAddress}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "What is the weather today?"
+}
+
+### Confidential access (must deny via backend)
+POST {{CrmAiPoc.Api_HostAddress}}/api/chat
+Content-Type: application/json
+
+{
+  "message": "Show me the confidential strategic partner account and its contacts"
+}

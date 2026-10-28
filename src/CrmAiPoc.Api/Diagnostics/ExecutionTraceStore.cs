@@ -108,6 +108,7 @@ public interface IExecutionTracer
     void SetCrmQuery(object? query);
     void SetAi(string? provider, string? model);
     void SetPrivacy(bool privacySafe, bool outboundContainedCrm);
+    void SetOutboundAiPrompt(object? prompt);
 }
 
 public sealed class ExecutionTracer : IExecutionTracer
@@ -205,6 +206,14 @@ public sealed class ExecutionTracer : IExecutionTracer
         Current.PrivacySafe = privacySafe;
         Current.OutboundContainedCrmRecords = outboundContainedCrm;
     }
+
+    public void SetOutboundAiPrompt(object? prompt)
+    {
+        if (Current is not null)
+        {
+            Current.OutboundAiPrompt = TraceSanitizer.SanitizeObject(prompt);
+        }
+    }
 }
 
 /// <summary>No-op tracer for unit tests that do not assert on execution inspection.</summary>
@@ -220,4 +229,5 @@ public sealed class NullExecutionTracer : IExecutionTracer
     public void SetCrmQuery(object? query) { }
     public void SetAi(string? provider, string? model) { }
     public void SetPrivacy(bool privacySafe, bool outboundContainedCrm) { }
+    public void SetOutboundAiPrompt(object? prompt) { }
 }

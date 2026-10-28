@@ -96,6 +96,7 @@ builder.Services.AddSingleton<ConversationStore>();
 builder.Services.AddSingleton<CrmArgumentValidator>();
 builder.Services.AddSingleton<CrmMetadataRegistry>();
 builder.Services.AddSingleton<EntityApprovalPolicy>();
+builder.Services.AddSingleton<ICrmAiMetadataCatalogService, CrmAiMetadataCatalogService>();
 builder.Services.AddSingleton<ICrmAuthorizationService, CrmAuthorizationService>();
 builder.Services.AddSingleton<IGenericCrmQueryBuilder, GenericCrmQueryBuilder>();
 builder.Services.AddSingleton<ExecutionTraceAccessor>();
@@ -147,6 +148,9 @@ else
     builder.Services.AddSingleton<IGenericCrmRepository, MockGenericCrmRepository>();
 }
 
+// Warm approved CRM metadata after the host starts (does not block Kestrel listen).
+builder.Services.AddHostedService<CrmMetadataWarmupHostedService>();
+
 // All AI providers stay registered; Ai:Provider selects which IChatClient is used.
 builder.Services.AddSingleton<LazyGeminiChatClient>();
 builder.Services.AddSingleton<LazyOpenAiChatClient>();
@@ -194,12 +198,11 @@ var aiModel = aiProvider switch
 };
 
 app.Logger.LogInformation(
-    "CRM AI POC starting. AiProvider={AiProvider}, Model={Model}, CrmProvider={CrmProvider}, LiveIntegration={Live}, AllowSendLiveDataToAi={AllowAi}",
+    "CRM AI POC starting. AiProvider={AiProvider}, Model={Model}, CrmProvider={CrmProvider}, LiveIntegration={Live}",
     aiProvider,
     aiModel,
     crmProviderName,
-    crmOptions.EnableLiveIntegration,
-    crmOptions.AllowSendLiveDataToAi);
+    crmOptions.EnableLiveIntegration);
 
 if (app.Environment.IsDevelopment())
 {

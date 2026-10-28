@@ -125,7 +125,7 @@ public static class CrmDiagnosticsEndpoints
             EntityApprovalPolicy policy,
             CancellationToken cancellationToken) =>
         {
-            await metadata.EnsureApprovedEntitiesLoadedAsync(cancellationToken);
+            // Seeds/cache only — do not block diagnostics on live Dynamics warm-up.
             var approved = await metadata.GetApprovedEntitiesAsync(cancellationToken);
             return Results.Ok(new
             {

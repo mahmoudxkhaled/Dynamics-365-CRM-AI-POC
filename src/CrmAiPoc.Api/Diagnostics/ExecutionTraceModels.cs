@@ -35,6 +35,7 @@ public static class ExecutionSteps
     public const string DynamicsHttpResponse = "Dynamics 365 HTTP Response";
     public const string LocalResponseFormatting = "Local Response Formatting";
     public const string PrivacyVerification = "Privacy Verification";
+    public const string MetadataCatalogPrepared = "Approved Metadata Catalog Prepared";
     public const string FinalChatResponse = "Final Chat Response";
 }
 
@@ -66,6 +67,7 @@ public sealed class ExecutionTraceSnapshot
     public object? ToolArguments { get; init; }
     public object? CrmQuery { get; init; }
     public object? Metrics { get; init; }
+    public object? OutboundAiPrompt { get; init; }
     public bool PrivacySafe { get; init; }
     public bool OutboundContainedCrmRecords { get; init; }
     public IReadOnlyList<ExecutionStepEvent> Steps { get; init; } = Array.Empty<ExecutionStepEvent>();
@@ -88,6 +90,7 @@ public sealed class ExecutionTrace
     public string? SelectedTool { get; set; }
     public object? ToolArguments { get; set; }
     public object? CrmQuery { get; set; }
+    public object? OutboundAiPrompt { get; set; }
     public Dictionary<string, long?> Metrics { get; } = new(StringComparer.OrdinalIgnoreCase);
     public bool PrivacySafe { get; set; } = true;
     public bool OutboundContainedCrmRecords { get; set; }
@@ -211,6 +214,7 @@ public sealed class ExecutionTrace
                 ToolArguments = ToolArguments,
                 CrmQuery = CrmQuery,
                 Metrics = Metrics.ToDictionary(kv => kv.Key, kv => (object?)kv.Value),
+                OutboundAiPrompt = OutboundAiPrompt,
                 PrivacySafe = PrivacySafe,
                 OutboundContainedCrmRecords = OutboundContainedCrmRecords,
                 Steps = _steps.Select(CloneStep).ToArray()

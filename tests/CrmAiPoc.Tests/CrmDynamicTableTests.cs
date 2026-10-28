@@ -14,7 +14,6 @@ public class CrmDynamicTableTests
     {
         var options = Options.Create(new CrmOptions
         {
-            AllowSendLiveDataToAi = false,
             ApprovedEntities = approved.Length > 0
                 ? approved.ToList()
                 : ["account", "contact", "salesorder", "lead"],

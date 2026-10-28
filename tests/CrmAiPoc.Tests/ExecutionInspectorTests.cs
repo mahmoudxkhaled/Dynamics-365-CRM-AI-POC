@@ -74,6 +74,35 @@ public class ExecutionInspectorTests
     }
 
     [Fact]
+    public void Tracer_Stores_Outbound_Ai_Prompt_On_Snapshot()
+    {
+        var accessor = new ExecutionTraceAccessor();
+        var store = new ExecutionTraceStore(accessor);
+        var tracer = new ExecutionTracer(store, accessor);
+        var trace = store.Start("c", "how many leads?", "exec-prompt");
+        accessor.CurrentExecutionId = trace.ExecutionId;
+
+        tracer.SetOutboundAiPrompt(new
+        {
+            tools = new[] { "query_crm" },
+            messages = new object[]
+            {
+                new { role = "system", content = "You are a read-only assistant." },
+                new { role = "system", content = "<<<APPROVED_CRM_METADATA_CATALOG>>>{\"entities\":[]}<<<END_APPROVED_CRM_METADATA_CATALOG>>>" },
+                new { role = "user", content = "how many leads?" }
+            }
+        });
+        store.Complete("exec-prompt", ExecutionTraceStatus.Success);
+
+        var snap = store.GetSnapshot("exec-prompt")!;
+        Assert.NotNull(snap.OutboundAiPrompt);
+        var text = TraceSanitizer.BuildSafeTraceText(snap);
+        Assert.Contains("OutboundAiPrompt:", text);
+        Assert.Contains("how many leads?", text);
+        Assert.Contains("APPROVED_CRM_METADATA_CATALOG", text);
+    }
+
+    [Fact]
     public void Failed_Step_Is_Not_Marked_Success()
     {
         var trace = new ExecutionTrace("x");

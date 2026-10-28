@@ -10,34 +10,10 @@ public sealed class CrmMetadataRegistry
     private readonly ConcurrentDictionary<string, CrmEntityMetadata> _entities =
         new(StringComparer.OrdinalIgnoreCase);
 
-    private readonly ConcurrentDictionary<string, byte> _discoveredNotApproved =
-        new(StringComparer.OrdinalIgnoreCase);
-
     public void Upsert(CrmEntityMetadata entity)
     {
         ArgumentNullException.ThrowIfNull(entity);
         _entities[entity.LogicalName] = entity;
-        if (!entity.IsApprovedForAi)
-        {
-            _discoveredNotApproved[entity.LogicalName] = 0;
-        }
-        else
-        {
-            _discoveredNotApproved.TryRemove(entity.LogicalName, out _);
-        }
-    }
-
-    public void MarkDiscovered(string logicalName)
-    {
-        if (string.IsNullOrWhiteSpace(logicalName))
-        {
-            return;
-        }
-
-        if (!_entities.ContainsKey(logicalName))
-        {
-            _discoveredNotApproved[logicalName.Trim()] = 0;
-        }
     }
 
     public bool TryGet(string logicalName, out CrmEntityMetadata metadata) =>
@@ -46,17 +22,9 @@ public sealed class CrmMetadataRegistry
     public IReadOnlyList<CrmEntityMetadata> GetApproved() =>
         _entities.Values.Where(e => e.IsApprovedForAi).OrderBy(e => e.LogicalName).ToArray();
 
-    public IReadOnlyList<string> GetDiscoveredLogicalNames() =>
-        _entities.Keys.Concat(_discoveredNotApproved.Keys).Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(x => x).ToArray();
+    public void Clear() => _entities.Clear();
 
-    public void Clear()
-    {
-        _entities.Clear();
-        _discoveredNotApproved.Clear();
-    }
-
-    /// <summary>Compact schema catalog safe to expose to the AI for tool planning.</summary>
+    /// <summary>Compact one-line schema summary for diagnostics (not the outbound AI catalog block).</summary>
     public string BuildAiCatalogSummary()
     {
         var approved = GetApproved();

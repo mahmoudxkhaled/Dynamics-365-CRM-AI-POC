@@ -2,9 +2,7 @@ using CrmAiPoc.Api.Ai;
 using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
-using CrmAiPoc.Api.Security;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace CrmAiPoc.Tests;
@@ -40,34 +38,30 @@ public class Phase4PrivacyAndSecurityTests
     }
 
     [Fact]
-    public async Task QueryCrm_RefusesWhenAllowSendLiveDataToAiTrue_OnDynamics()
+    public void OutboundHistory_NeverIncludesCrmRows_OnlyCatalogAndLatestUser()
     {
-        var options = Options.Create(new CrmOptions
+        var session = new ConversationSession("test");
+        session.Add(new ChatMessage(ChatRole.User, "earlier accounts question"));
+        session.Add(new ChatMessage(ChatRole.Assistant, "ORD-1001 should not be resent"));
+
+        var catalog = new CrmAiMetadataCatalogBuildResult
         {
-            Provider = "Dynamics365",
-            EnableLiveIntegration = true,
-            BaseUrl = "https://example.invalid/api/data/v9.1/",
-            AllowSendLiveDataToAi = true,
-            MaxPageSize = 25,
-            DefaultPageSize = 10,
-            ApprovedEntities = ["account", "contact", "salesorder"]
-        });
+            Enabled = true,
+            Success = true,
+            FormattedBlock = $"{CrmAiMetadataCatalogService.BeginMarker}\n{{\"entities\":[]}}\n{CrmAiMetadataCatalogService.EndMarker}",
+            EntityCount = 0,
+            AttributeCount = 0,
+            CharacterCount = 40
+        };
 
-        var policy = new EntityApprovalPolicy(options);
-        var registry = new CrmMetadataRegistry();
-        var metadata = new MockCrmMetadataService(registry, policy);
-        var builder = new GenericCrmQueryBuilder(options);
-        var auth = new CrmAuthorizationService(options, NullLogger<CrmAuthorizationService>.Instance, policy);
-        var repo = new MockGenericCrmRepository(metadata, policy, builder, auth);
+        var outbound = ChatService.BuildOutboundHistory(session, "how many leads?", catalog);
+        Assert.Equal(3, outbound.Count);
+        Assert.All(outbound, m => Assert.DoesNotContain("ORD-1001", m.Text ?? string.Empty, StringComparison.Ordinal));
+        Assert.Contains(outbound, m => m.Role == ChatRole.System && (m.Text ?? string.Empty).Contains(CrmAiMetadataCatalogService.BeginMarker, StringComparison.Ordinal));
+        Assert.Equal("how many leads?", outbound[^1].Text);
 
-        var tools = new CrmAiTools(
-            repo,
-            options,
-            NullLogger<CrmAiTools>.Instance,
-            metadata);
-
-        var json = await tools.query_crm(entity: "salesorder", operation: "list", limit: 5);
-        Assert.Contains("\"error\":true", json.Replace(" ", string.Empty), StringComparison.OrdinalIgnoreCase);
+        var audit = OutboundAiPayloadAuditor.Audit(outbound);
+        Assert.True(audit.SafeForLiveCrm);
     }
 
     [Fact]

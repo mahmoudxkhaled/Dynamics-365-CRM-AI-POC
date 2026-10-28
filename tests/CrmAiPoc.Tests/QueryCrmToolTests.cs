@@ -15,7 +15,6 @@ public class QueryCrmToolTests
     {
         var options = Options.Create(new CrmOptions
         {
-            AllowSendLiveDataToAi = false,
             ApprovedEntities = ["account", "contact", "salesorder", "lead"],
             BusinessTimeZoneId = "Africa/Cairo"
         });
@@ -25,7 +24,7 @@ public class QueryCrmToolTests
         var builder = new GenericCrmQueryBuilder(options);
         var auth = new CrmAuthorizationService(options, NullLogger<CrmAuthorizationService>.Instance, policy);
         var repo = new MockGenericCrmRepository(metadata, policy, builder, auth);
-        return new CrmAiTools(repo, options, NullLogger<CrmAiTools>.Instance, metadata);
+        return new CrmAiTools(repo, NullLogger<CrmAiTools>.Instance);
     }
 
     [Fact]

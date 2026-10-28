@@ -16,7 +16,6 @@ public class Phase5GenericCrmEngineTests
     {
         var options = Options.Create(new CrmOptions
         {
-            AllowSendLiveDataToAi = false,
             ApprovedEntities = ["account", "contact", "salesorder"],
             BusinessTimeZoneId = "Africa/Cairo"
         });
@@ -26,11 +25,7 @@ public class Phase5GenericCrmEngineTests
         var builder = new GenericCrmQueryBuilder(options);
         var auth = new CrmAuthorizationService(options, NullLogger<CrmAuthorizationService>.Instance, policy);
         var repo = new MockGenericCrmRepository(metadata, policy, builder, auth);
-        var tools = new CrmAiTools(
-            repo,
-            options,
-            NullLogger<CrmAiTools>.Instance,
-            metadata);
+        var tools = new CrmAiTools(repo, NullLogger<CrmAiTools>.Instance);
         return (policy, registry, metadata, repo, tools);
     }
 

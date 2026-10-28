@@ -1,15 +1,13 @@
 using System.ComponentModel;
 using System.Text.Json;
-using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Generic;
-using CrmAiPoc.Api.Crm.Metadata;
-using Microsoft.Extensions.Options;
 
 namespace CrmAiPoc.Api.Ai;
 
 /// <summary>
 /// Approved read-only CRM tools exposed to the AI model via Microsoft.Extensions.AI.
-/// Production chat exposes only <see cref="query_crm"/>; ChatService executes the validated plan locally.
+/// Production chat exposes only <see cref="query_crm"/>; ChatService executes the validated plan locally
+/// and never returns CRM rows to the model.
 /// </summary>
 public sealed class CrmAiTools
 {
@@ -19,9 +17,7 @@ public sealed class CrmAiTools
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    private readonly CrmOptions _crmOptions;
     private readonly IGenericCrmRepository _genericCrm;
-    private readonly ICrmMetadataService? _metadata;
     private readonly ILogger<CrmAiTools> _logger;
 
     /// <summary>Optional conversation session (set by ChatService when needed).</summary>
@@ -29,13 +25,9 @@ public sealed class CrmAiTools
 
     public CrmAiTools(
         IGenericCrmRepository genericCrm,
-        IOptions<CrmOptions> crmOptions,
-        ILogger<CrmAiTools> logger,
-        ICrmMetadataService? metadata = null)
+        ILogger<CrmAiTools> logger)
     {
         _genericCrm = genericCrm;
-        _crmOptions = crmOptions.Value;
-        _metadata = metadata;
         _logger = logger;
     }
 
@@ -48,8 +40,8 @@ public sealed class CrmAiTools
         [Description("Date field for relative range.")] string? relativeDateField = null,
         [Description("last_calendar_month | this_calendar_month | this_week | last_7_days | last_30_days")] string? relativeDateToken = null,
         [Description("JSON array of sorts: [{field,direction}] max 2.")] string? sortJson = null,
-        [Description("Legacy single sort field.")] string? sortField = null,
-        [Description("asc or desc")] string? sortDirection = "desc",
+        [Description("Sort field logical name. For highest/lowest-value sales orders use totalamount.")] string? sortField = null,
+        [Description("asc or desc. Use desc for highest-value, asc for lowest-value.")] string? sortDirection = "desc",
         [Description("Max rows 1-50 for list.")] int limit = 10,
         [Description("Parent entity for one-hop relationship filter.")] string? relatedFromEntity = null,
         [Description("Parent record GUID for one-hop relationship filter.")] string? relatedFromId = null,
@@ -60,16 +52,6 @@ public sealed class CrmAiTools
             entity,
             operation,
             limit);
-
-        if (_crmOptions.IsDynamicsProvider && _crmOptions.AllowSendLiveDataToAi)
-        {
-            return Fail("External transmission of live CRM data is not enabled for this POC.");
-        }
-
-        if (_metadata is not null)
-        {
-            await _metadata.EnsureApprovedEntitiesLoadedAsync(cancellationToken);
-        }
 
         var parsed = CrmQueryPlanParser.Parse(
             entity,
@@ -111,8 +93,7 @@ public sealed class CrmAiTools
             countMayBeCapped = result.CountMayBeCapped,
             totalReturned = result.Items.Count,
             records = result.Items,
-            note = result.Message,
-            catalogHint = _metadata?.GetAiCatalogSummary()
+            note = result.Message
         };
 
         var json = JsonSerializer.Serialize(payload, JsonOptions);

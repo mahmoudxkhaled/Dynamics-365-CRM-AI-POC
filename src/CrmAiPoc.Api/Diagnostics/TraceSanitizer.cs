@@ -207,6 +207,12 @@ public static partial class TraceSanitizer
             sb.AppendLine(JsonSerializer.Serialize(snap.CrmQuery, new JsonSerializerOptions { WriteIndented = true }));
         }
 
+        if (snap.OutboundAiPrompt is not null)
+        {
+            sb.AppendLine("OutboundAiPrompt:");
+            sb.AppendLine(JsonSerializer.Serialize(snap.OutboundAiPrompt, new JsonSerializerOptions { WriteIndented = true }));
+        }
+
         return sb.ToString();
     }
 

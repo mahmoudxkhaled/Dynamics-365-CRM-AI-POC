@@ -51,4 +51,43 @@ public class CrmQueryIntentHelperTests
         var corrected = CrmQueryIntentHelper.CorrectToolCall("Show me the latest 5 accounts", sticky);
         Assert.Equal("account", corrected.Arguments!["entity"]?.ToString());
     }
+
+    [Fact]
+    public void Highest_Value_SalesOrders_Forces_TotalAmount_Desc()
+    {
+        var incomplete = new FunctionCallContent(
+            "1",
+            "query_crm",
+            new Dictionary<string, object?>
+            {
+                ["entity"] = "salesorder",
+                ["operation"] = "list",
+                ["limit"] = 10
+            });
+
+        var corrected = CrmQueryIntentHelper.CorrectToolCall("Highest-value sales orders", incomplete);
+
+        Assert.Equal("salesorder", corrected.Arguments!["entity"]?.ToString());
+        Assert.Equal("totalamount", corrected.Arguments["sortField"]?.ToString());
+        Assert.Equal("desc", corrected.Arguments["sortDirection"]?.ToString());
+    }
+
+    [Fact]
+    public void Lowest_Value_SalesOrders_Forces_TotalAmount_Asc()
+    {
+        var call = new FunctionCallContent(
+            "1",
+            "query_crm",
+            new Dictionary<string, object?>
+            {
+                ["entity"] = "salesorder",
+                ["operation"] = "list",
+                ["sortField"] = "createdon",
+                ["sortDirection"] = "desc"
+            });
+
+        var corrected = CrmQueryIntentHelper.CorrectToolCall("lowest value sales orders", call);
+        Assert.Equal("totalamount", corrected.Arguments!["sortField"]?.ToString());
+        Assert.Equal("asc", corrected.Arguments["sortDirection"]?.ToString());
+    }
 }

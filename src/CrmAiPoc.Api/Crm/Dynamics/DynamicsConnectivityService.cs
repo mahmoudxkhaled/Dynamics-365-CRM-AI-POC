@@ -175,7 +175,7 @@ public sealed class DynamicsConnectivityService
                 "Before multi-user deployment: (1) Host behind IIS/HTTP.sys with Windows Authentication. " +
                 "(2) Impersonate/delegate the caller to CRM (usually Kerberos constrained delegation) so DefaultCredentials " +
                 "are the end-user, not the app pool. (3) Enforce CRM security roles per user via WhoAmI + CRM privileges; " +
-                "do not treat client-supplied role names as auth. (4) Keep AllowSendLiveDataToAi=false so Groq never receives CRM rows."
+                "do not treat client-supplied role names as auth. (4) Chat never sends CRM rows to the AI — only schema catalog when enabled."
         };
     }
 

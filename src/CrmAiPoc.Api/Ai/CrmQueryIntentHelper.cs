@@ -75,6 +75,7 @@ public static partial class CrmQueryIntentHelper
                 ? "count"
                 : "list";
             ApplyLimitHint(userMessage, args);
+            ApplyValueSortHint(userMessage, args);
             if (name.Equals("get_contacts_for_account", StringComparison.OrdinalIgnoreCase) &&
                 args.TryGetValue("accountId", out var accountId) && accountId is not null)
             {
@@ -114,6 +115,7 @@ public static partial class CrmQueryIntentHelper
         }
 
         ApplyLimitHint(userMessage, args);
+        ApplyValueSortHint(userMessage, args);
 
         // Active sales orders shortcut when user says Active/نشط without filtersJson.
         if (string.Equals(GetArgString(args, "entity"), "salesorder", StringComparison.OrdinalIgnoreCase) &&
@@ -156,6 +158,32 @@ public static partial class CrmQueryIntentHelper
         }
 
         args.TryAdd("limit", 10);
+    }
+
+    /// <summary>
+    /// Groq often omits sortField for "highest-value sales orders"; force totalamount sort locally.
+    /// </summary>
+    private static void ApplyValueSortHint(string message, IDictionary<string, object?> args)
+    {
+        if (!string.Equals(GetArgString(args, "entity"), "salesorder", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (HighestValueIntentRegex().IsMatch(message))
+        {
+            args["sortField"] = "totalamount";
+            args["sortDirection"] = "desc";
+            args.Remove("sortJson");
+            return;
+        }
+
+        if (LowestValueIntentRegex().IsMatch(message))
+        {
+            args["sortField"] = "totalamount";
+            args["sortDirection"] = "asc";
+            args.Remove("sortJson");
+        }
     }
 
     private static string? GetArgString(IDictionary<string, object?>? args, string key)
@@ -202,4 +230,14 @@ public static partial class CrmQueryIntentHelper
         @"(?:آخر|اخر|last|latest|top)\s+(\d{1,2})|\b(\d{1,2})\s+(?:accounts?|contacts?|leads?|sales\s*orders?|أوامر)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex LimitHintRegex();
+
+    [GeneratedRegex(
+        @"highest[\s\-]*value|highest[\s\-]*amount|most\s+expensive|top[\s\-]*value|by\s+(?:highest\s+)?(?:value|amount)|أعلى\s*قيمة|الاعلى\s*قيمة|الأعلى\s*قيمة|أعلى\s*مبلغ",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex HighestValueIntentRegex();
+
+    [GeneratedRegex(
+        @"lowest[\s\-]*value|lowest[\s\-]*amount|least\s+expensive|cheapest|by\s+lowest\s+(?:value|amount)|أقل\s*قيمة|الاقل\s*قيمة|الأقل\s*قيمة|أقل\s*مبلغ",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex LowestValueIntentRegex();
 }

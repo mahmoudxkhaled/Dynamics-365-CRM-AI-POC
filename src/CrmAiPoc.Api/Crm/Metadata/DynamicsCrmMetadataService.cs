@@ -18,6 +18,7 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
     private readonly ILogger<DynamicsCrmMetadataService> _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private DateTimeOffset _lastFullLoadUtc = DateTimeOffset.MinValue;
+    private bool _liveDiscoveryCompleted;
 
     public DynamicsCrmMetadataService(
         DynamicsCrmHttp http,
@@ -37,8 +38,11 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
 
     public async Task EnsureApprovedEntitiesLoadedAsync(CancellationToken cancellationToken = default)
     {
+        EnsureSeedsPresent();
+
         var cacheTtl = TimeSpan.FromSeconds(Math.Max(60, _options.MetadataCacheSeconds));
-        if (_registry.GetApproved().Count >= _policy.ApprovedLogicalNames.Count &&
+        if (_liveDiscoveryCompleted &&
+            _registry.GetApproved().Count >= _policy.ApprovedLogicalNames.Count &&
             DateTimeOffset.UtcNow - _lastFullLoadUtc < cacheTtl)
         {
             return;
@@ -49,30 +53,46 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
 
     public async Task<CrmEntityMetadata?> GetEntityAsync(string logicalName, CancellationToken cancellationToken = default)
     {
-        if (_registry.TryGet(logicalName, out var cached) &&
-            DateTimeOffset.UtcNow - cached.DiscoveredAtUtc < TimeSpan.FromSeconds(Math.Max(60, _options.MetadataCacheSeconds)))
+        EnsureSeedsPresent();
+
+        if (_registry.TryGet(logicalName, out var cached))
         {
             return cached;
         }
 
-        await RefreshAsync(logicalName, cancellationToken);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(TimeSpan.FromSeconds(8));
+        try
+        {
+            await RefreshAsync(logicalName, cts.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning("Metadata refresh timed out for {Entity}; continuing without live schema.", logicalName);
+            UpsertFallbackMetadata(logicalName);
+        }
+
         return _registry.TryGet(logicalName, out var entity) ? entity : null;
     }
 
-    public async Task<IReadOnlyList<CrmEntityMetadata>> GetApprovedEntitiesAsync(CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<CrmEntityMetadata>> GetApprovedEntitiesAsync(CancellationToken cancellationToken = default)
     {
-        await EnsureApprovedEntitiesLoadedAsync(cancellationToken);
-        return _registry.GetApproved();
+        _ = cancellationToken;
+        EnsureSeedsPresent();
+        return Task.FromResult(_registry.GetApproved());
     }
 
     public async Task RefreshAsync(string? logicalName = null, CancellationToken cancellationToken = default)
     {
+        EnsureSeedsPresent();
+
         await _gate.WaitAsync(cancellationToken);
         try
         {
             if (!_options.EnableLiveIntegration || string.IsNullOrWhiteSpace(_options.BaseUrl))
             {
-                SeedStatic();
+                _liveDiscoveryCompleted = true;
+                _lastFullLoadUtc = DateTimeOffset.UtcNow;
                 return;
             }
 
@@ -82,7 +102,8 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
             }
             catch
             {
-                SeedStatic();
+                _liveDiscoveryCompleted = true;
+                _lastFullLoadUtc = DateTimeOffset.UtcNow;
                 return;
             }
 
@@ -92,13 +113,21 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
 
             foreach (var name in targets)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
-                    var meta = await DiscoverEntityAsync(name, cancellationToken);
+                    using var entityCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    entityCts.CancelAfter(TimeSpan.FromSeconds(20));
+                    var meta = await DiscoverEntityAsync(name, entityCts.Token);
                     if (meta is not null)
                     {
                         _registry.Upsert(meta);
                     }
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogWarning("Metadata discovery timed out for {Entity}; keeping seed/stub.", name);
+                    UpsertFallbackMetadata(name);
                 }
                 catch (Exception ex)
                 {
@@ -114,6 +143,7 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
 
             if (string.IsNullOrWhiteSpace(logicalName))
             {
+                _liveDiscoveryCompleted = true;
                 _lastFullLoadUtc = DateTimeOffset.UtcNow;
             }
         }
@@ -123,11 +153,24 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
         }
     }
 
-    private void SeedStatic()
+    /// <summary>
+    /// Ensures approved entities exist in the registry immediately (no CRM HTTP).
+    /// Does not mark live discovery complete — warm-up still overlays Dynamics metadata.
+    /// </summary>
+    private void EnsureSeedsPresent()
     {
+        if (_registry.GetApproved().Count >= _policy.ApprovedLogicalNames.Count &&
+            _policy.ApprovedLogicalNames.All(n => _registry.TryGet(n, out _)))
+        {
+            return;
+        }
+
         foreach (var entity in StaticSeedCrmMetadata.CreateApprovedSeeds(_policy))
         {
-            _registry.Upsert(entity);
+            if (!_registry.TryGet(entity.LogicalName, out _))
+            {
+                _registry.Upsert(entity);
+            }
         }
 
         foreach (var approved in _policy.ApprovedLogicalNames)
@@ -137,8 +180,6 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
                 UpsertFallbackMetadata(approved);
             }
         }
-
-        _lastFullLoadUtc = DateTimeOffset.UtcNow;
     }
 
     private void UpsertFallbackMetadata(string logicalName)
@@ -187,10 +228,12 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
         var attrsHttp = await _http.GetAsync(attrsPath, cancellationToken);
         var attributes = attrsHttp.IsSuccess ? ParseAttributes(attrsHttp.Body) : [];
 
-        // OptionSets for status/state/picklist — best effort for approved compact set.
         await EnrichOptionSetsAsync(logicalName, attributes, cancellationToken);
 
-        var relationships = await DiscoverRelationshipsAsync(logicalName, cancellationToken);
+        // Preserve seed relationships; skip live relationship GETs (too heavy for warm-up).
+        var relationships = _registry.TryGet(logicalName, out var existing)
+            ? existing.Relationships
+            : Array.Empty<CrmRelationshipMetadata>();
 
         var approved = _policy.IsApproved(logicalName);
         return new CrmEntityMetadata
@@ -213,23 +256,23 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
         List<CrmAttributeMetadata> attributes,
         CancellationToken cancellationToken)
     {
-        // Cap option-set enrichment: state/status always; at most a few other picklists (lead has many).
+        // statecode/statuscode only — full picklist enrichment is too chatty against Dynamics.
         var candidates = attributes
+            .Where(a =>
+                a.LogicalName.Equals("statecode", StringComparison.OrdinalIgnoreCase) ||
+                a.LogicalName.Equals("statuscode", StringComparison.OrdinalIgnoreCase))
             .Where(a => a.Kind is CrmAttributeKind.Status or CrmAttributeKind.State or CrmAttributeKind.Picklist)
-            .OrderBy(a => a.LogicalName is "statecode" or "statuscode" ? 0 : 1)
-            .ThenBy(a => a.LogicalName, StringComparer.OrdinalIgnoreCase)
-            .Take(8)
+            .Take(2)
             .ToList();
 
         foreach (var attr in candidates)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             try
             {
                 var metaType = attr.Kind == CrmAttributeKind.State
                     ? "StateAttributeMetadata"
-                    : attr.Kind == CrmAttributeKind.Status
-                        ? "StatusAttributeMetadata"
-                        : "PicklistAttributeMetadata";
+                    : "StatusAttributeMetadata";
                 var path =
                     $"EntityDefinitions(LogicalName='{Escape(logicalName)}')" +
                     $"/Attributes(LogicalName='{Escape(attr.LogicalName)}')" +
@@ -289,87 +332,6 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
                 _logger.LogDebug(ex, "OptionSet enrich failed for {Entity}.{Attr}", logicalName, attr.LogicalName);
             }
         }
-    }
-
-    private async Task<IReadOnlyList<CrmRelationshipMetadata>> DiscoverRelationshipsAsync(
-        string logicalName,
-        CancellationToken cancellationToken)
-    {
-        var list = new List<CrmRelationshipMetadata>();
-        try
-        {
-            var manyToOne =
-                $"EntityDefinitions(LogicalName='{Escape(logicalName)}')" +
-                "/ManyToOneRelationships?$select=SchemaName,ReferencingEntity,ReferencedEntity,ReferencingAttribute,ReferencedAttribute,ReferencingEntityNavigationPropertyName,ReferencedEntityNavigationPropertyName";
-            var http = await _http.GetAsync(manyToOne, cancellationToken);
-            if (http.IsSuccess)
-            {
-                list.AddRange(ParseRelationships(http.Body, CrmRelationshipKind.ManyToOne));
-            }
-
-            var oneToMany =
-                $"EntityDefinitions(LogicalName='{Escape(logicalName)}')" +
-                "/OneToManyRelationships?$select=SchemaName,ReferencingEntity,ReferencedEntity,ReferencingAttribute,ReferencedAttribute,ReferencingEntityNavigationPropertyName,ReferencedEntityNavigationPropertyName";
-            http = await _http.GetAsync(oneToMany, cancellationToken);
-            if (http.IsSuccess)
-            {
-                list.AddRange(ParseRelationships(http.Body, CrmRelationshipKind.OneToMany));
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Relationship discovery failed for {Entity}", logicalName);
-        }
-
-        // Only mark relationships between approved entities as AI-approved.
-        return list.Select(r => new CrmRelationshipMetadata
-        {
-            SchemaName = r.SchemaName,
-            Kind = r.Kind,
-            ReferencingEntity = r.ReferencingEntity,
-            ReferencedEntity = r.ReferencedEntity,
-            ReferencingAttribute = r.ReferencingAttribute,
-            ReferencedAttribute = r.ReferencedAttribute,
-            ReferencingEntityNavigationPropertyName = r.ReferencingEntityNavigationPropertyName,
-            ReferencedEntityNavigationPropertyName = r.ReferencedEntityNavigationPropertyName,
-            IsApproved = _policy.IsApproved(r.ReferencingEntity) && _policy.IsApproved(r.ReferencedEntity)
-        }).ToArray();
-    }
-
-    private static List<CrmRelationshipMetadata> ParseRelationships(string json, CrmRelationshipKind kind)
-    {
-        using var doc = JsonDocument.Parse(json);
-        if (!doc.RootElement.TryGetProperty("value", out var values))
-        {
-            return [];
-        }
-
-        var list = new List<CrmRelationshipMetadata>();
-        foreach (var item in values.EnumerateArray())
-        {
-            var schema = GetString(item, "SchemaName");
-            var referencing = GetString(item, "ReferencingEntity");
-            var referenced = GetString(item, "ReferencedEntity");
-            if (string.IsNullOrWhiteSpace(schema) || string.IsNullOrWhiteSpace(referencing) || string.IsNullOrWhiteSpace(referenced))
-            {
-                continue;
-            }
-
-            list.Add(new CrmRelationshipMetadata
-            {
-                SchemaName = schema,
-                Kind = kind,
-                ReferencingEntity = referencing,
-                ReferencedEntity = referenced,
-                ReferencingAttribute = GetString(item, "ReferencingAttribute"),
-                ReferencedAttribute = GetString(item, "ReferencedAttribute"),
-                ReferencingEntityNavigationPropertyName = GetString(item, "ReferencingEntityNavigationPropertyName"),
-                ReferencedEntityNavigationPropertyName = GetString(item, "ReferencedEntityNavigationPropertyName"),
-                IsApproved = false
-            });
-        }
-
-        return list;
     }
 
     private static List<CrmAttributeMetadata> ParseAttributes(string json)

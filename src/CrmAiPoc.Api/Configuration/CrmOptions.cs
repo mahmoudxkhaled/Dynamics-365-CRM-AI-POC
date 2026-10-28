@@ -37,10 +37,26 @@ public sealed class CrmOptions
     public string BusinessTimeZoneId { get; set; } = "Africa/Cairo";
 
     /// <summary>
-    /// When false (default), live CRM row data is never returned to AI tools.
-    /// Backend diagnostic/query endpoints can still retrieve authorized data locally.
+    /// When true, a compact approved CRM metadata catalog (entities/fields only — never records)
+    /// is included in the outbound AI context. Default false; enable explicitly for PoC/Dev.
+    /// Live CRM rows are never sent to the AI (privacy-safe by design).
     /// </summary>
-    public bool AllowSendLiveDataToAi { get; set; }
+    public bool AllowSendApprovedMetadataCatalogToAi { get; set; }
+
+    /// <summary>Max approved entities included in the AI metadata catalog.</summary>
+    public int AiMetadataCatalogMaxEntities { get; set; } = 8;
+
+    /// <summary>Max attributes per entity in the AI metadata catalog.</summary>
+    public int AiMetadataCatalogMaxAttributesPerEntity { get; set; } = 20;
+
+    /// <summary>Hard character budget for the serialized catalog block sent to the AI.</summary>
+    public int AiMetadataCatalogMaxChars { get; set; } = 6000;
+
+    /// <summary>
+    /// When true (default), load approved entity metadata from CRM/Mock in a background hosted service at startup
+    /// so chat does not wait on first-request discovery.
+    /// </summary>
+    public bool WarmApprovedMetadataOnStartup { get; set; } = true;
 
     /// <summary>
     /// POC safety: when true (default in Development), reject non-loopback callers for chat/API.

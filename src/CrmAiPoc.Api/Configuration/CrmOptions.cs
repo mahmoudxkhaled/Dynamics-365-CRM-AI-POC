@@ -65,12 +65,6 @@ public sealed class CrmOptions
     public bool RestrictToLoopback { get; set; } = true;
 
     /// <summary>
-    /// Development-only AI execution inspector (in-memory traces + diagnostic endpoints).
-    /// Disabled by default; enable only in Development appsettings. Not a security boundary — also requires loopback.
-    /// </summary>
-    public bool EnableExecutionInspector { get; set; }
-
-    /// <summary>
     /// Mock authenticated user for authorization demos.
     /// Do not treat client-supplied role names as authenticated identity.
     /// </summary>

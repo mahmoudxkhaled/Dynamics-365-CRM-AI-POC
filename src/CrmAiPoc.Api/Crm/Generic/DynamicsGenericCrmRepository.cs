@@ -1,9 +1,7 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using CrmAiPoc.Api.Crm.Dynamics;
 using CrmAiPoc.Api.Crm.Metadata;
-using CrmAiPoc.Api.Diagnostics;
 using CrmAiPoc.Api.Security;
 
 namespace CrmAiPoc.Api.Crm.Generic;
@@ -15,7 +13,6 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
     private readonly EntityApprovalPolicy _policy;
     private readonly IGenericCrmQueryBuilder _builder;
     private readonly ICrmAuthorizationService _auth;
-    private readonly IExecutionTracer _tracer;
     private readonly ILogger<DynamicsGenericCrmRepository> _logger;
 
     public DynamicsGenericCrmRepository(
@@ -24,7 +21,6 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
         EntityApprovalPolicy policy,
         IGenericCrmQueryBuilder builder,
         ICrmAuthorizationService auth,
-        IExecutionTracer tracer,
         ILogger<DynamicsGenericCrmRepository> logger)
     {
         _http = http;
@@ -32,7 +28,6 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
         _policy = policy;
         _builder = builder;
         _auth = auth;
-        _tracer = tracer;
         _logger = logger;
     }
 
@@ -79,60 +74,22 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
         }
 
         plan = CloneWithEntity(plan, logical);
-        var buildSw = Stopwatch.StartNew();
-        var buildStep = _tracer.Begin(ExecutionSteps.QueryConstruction, "Building OData query from plan");
         var built = _builder.Build(plan, entity, relatedFrom);
-        buildSw.Stop();
 
         if (!built.Success || string.IsNullOrWhiteSpace(built.RelativeRequestUri))
         {
-            if (buildStep is not null)
-            {
-                _tracer.Complete(buildStep.StepId, ExecutionStepStatus.Failed, error: built.Error);
-            }
-
             return Fail(plan, built.Error ?? "Invalid CRM query plan.");
-        }
-
-        var safePath = TraceSanitizer.RedactODataPath(built.RelativeRequestUri);
-        var crmQuery = new
-        {
-            method = "OData",
-            httpMethod = "GET",
-            entity = logical,
-            entitySetName = entity.EntitySetName,
-            operation = built.Operation.ToString(),
-            selectFields = built.SelectFields,
-            filters = built.AppliedFilterSummary,
-            sort = built.SortSummary,
-            limit = built.Limit,
-            relatedFromEntity = plan.RelatedFromEntity,
-            relativeRequestUri = safePath,
-            readableQuery = safePath
-        };
-        _tracer.SetCrmQuery(crmQuery);
-        if (buildStep is not null)
-        {
-            _tracer.Complete(
-                buildStep.StepId,
-                ExecutionStepStatus.Success,
-                summary: safePath.Length > 120 ? safePath[..120] + "…" : safePath,
-                details: crmQuery);
         }
 
         _http.EnsureLiveConfigured();
         _logger.LogInformation(
-            "query_crm prepared. Entity={Entity}, Operation={Operation}, Limit={Limit}",
+            "query_crm prepared. Entity={Entity}, Operation={Operation}, Limit={Limit}, Path={Path}",
             logical,
             built.Operation,
-            built.Limit);
+            built.Limit,
+            built.RelativeRequestUri);
 
         var includeAnnotations = built.Operation == CrmQueryOperation.Count;
-        var reqStep = _tracer.Begin(
-            ExecutionSteps.DynamicsHttpRequest,
-            summary: $"GET {entity.EntitySetName}",
-            details: new { httpMethod = "GET", path = safePath, includeAnnotations });
-        var crmSw = Stopwatch.StartNew();
         var http = await _http.GetAsync(built.RelativeRequestUri, includeAnnotations, cancellationToken);
         if (!http.IsSuccess && includeAnnotations)
         {
@@ -142,35 +99,6 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
                 http.StatusCode);
             http = await _http.GetAsync(built.RelativeRequestUri, includeAnnotations: false, cancellationToken);
         }
-
-        crmSw.Stop();
-        _tracer.SetMetric("crmHttpMs", crmSw.ElapsedMilliseconds);
-        if (reqStep is not null)
-        {
-            _tracer.Complete(
-                reqStep.StepId,
-                http.IsSuccess ? ExecutionStepStatus.Success : ExecutionStepStatus.Failed,
-                summary: $"status={http.StatusCode}; {crmSw.ElapsedMilliseconds}ms",
-                details: new { http.StatusCode, durationMs = crmSw.ElapsedMilliseconds, path = safePath },
-                error: http.IsSuccess ? null : http.ErrorCategory);
-        }
-
-        _tracer.Instant(
-            ExecutionSteps.DynamicsHttpResponse,
-            http.IsSuccess ? ExecutionStepStatus.Success : ExecutionStepStatus.Failed,
-            summary: http.IsSuccess
-                ? $"CRM HTTP {http.StatusCode} (body length only; rows not stored in trace)"
-                : $"CRM HTTP {http.StatusCode} failed",
-            details: new
-            {
-                http.StatusCode,
-                bodyLength = http.Body?.Length ?? 0,
-                durationMs = crmSw.ElapsedMilliseconds,
-                // Never attach raw CRM body to the inspector.
-                recordsStoredInTrace = false
-            },
-            error: http.IsSuccess ? null : $"Dynamics GET failed ({http.StatusCode})",
-            durationMs: crmSw.ElapsedMilliseconds);
 
         if (!http.IsSuccess)
         {
@@ -183,25 +111,6 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
             var countInfo = ReadODataCountInfo(http.Body);
             var capped = countInfo.LimitExceeded ||
                          countInfo.Count >= CrmQueryLimits.DynamicsODataCountCeiling;
-            _tracer.SetCrmQuery(new
-            {
-                crmQuery.method,
-                crmQuery.httpMethod,
-                crmQuery.entity,
-                crmQuery.entitySetName,
-                crmQuery.operation,
-                crmQuery.selectFields,
-                crmQuery.filters,
-                crmQuery.sort,
-                crmQuery.limit,
-                crmQuery.relatedFromEntity,
-                crmQuery.relativeRequestUri,
-                crmQuery.readableQuery,
-                httpStatus = http.StatusCode,
-                recordCount = countInfo.Count,
-                countMayBeCapped = capped,
-                durationMs = crmSw.ElapsedMilliseconds
-            });
             return new GenericCrmQueryResult
             {
                 Entity = logical,
@@ -225,24 +134,6 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
         }
 
         var items = ParseRows(http.Body, entity);
-        _tracer.SetCrmQuery(new
-        {
-            crmQuery.method,
-            crmQuery.httpMethod,
-            crmQuery.entity,
-            crmQuery.entitySetName,
-            crmQuery.operation,
-            crmQuery.selectFields,
-            crmQuery.filters,
-            crmQuery.sort,
-            crmQuery.limit,
-            crmQuery.relatedFromEntity,
-            crmQuery.relativeRequestUri,
-            crmQuery.readableQuery,
-            httpStatus = http.StatusCode,
-            recordCount = items.Count,
-            durationMs = crmSw.ElapsedMilliseconds
-        });
         return new GenericCrmQueryResult
         {
             Entity = logical,

@@ -4,7 +4,6 @@ using CrmAiPoc.Api.Crm.Dynamics;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
 using CrmAiPoc.Api.Crm.Validation;
-using CrmAiPoc.Api.Diagnostics;
 using CrmAiPoc.Api.Endpoints;
 using CrmAiPoc.Api.Security;
 using Microsoft.Extensions.AI;
@@ -99,9 +98,6 @@ builder.Services.AddSingleton<EntityApprovalPolicy>();
 builder.Services.AddSingleton<ICrmAiMetadataCatalogService, CrmAiMetadataCatalogService>();
 builder.Services.AddSingleton<ICrmAuthorizationService, CrmAuthorizationService>();
 builder.Services.AddSingleton<IGenericCrmQueryBuilder, GenericCrmQueryBuilder>();
-builder.Services.AddSingleton<ExecutionTraceAccessor>();
-builder.Services.AddSingleton<IExecutionTraceStore, ExecutionTraceStore>();
-builder.Services.AddSingleton<IExecutionTracer, ExecutionTracer>();
 builder.Services.AddScoped<CrmAiTools>();
 builder.Services.AddScoped<ChatService>();
 
@@ -217,7 +213,6 @@ app.UseStaticFiles();
 
 app.MapChatEndpoints();
 app.MapCrmDiagnosticsEndpoints();
-app.MapExecutionInspectorEndpoints();
 
 app.Run();
 

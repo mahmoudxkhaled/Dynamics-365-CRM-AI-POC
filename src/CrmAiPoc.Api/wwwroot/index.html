@@ -44,8 +44,6 @@
       --we-mono: Consolas, "Cascadia Mono", "Courier New", monospace;
       --placeholder: #9A96A4;
       --panel-head-bg: linear-gradient(180deg, var(--we-white) 0%, var(--we-purple-soft) 160%);
-      --inspector-head-bg: linear-gradient(180deg, #F3EEF8 0%, var(--we-white) 120%);
-      --step-body-bg: #F3F0F7;
       --table-head-bg: var(--we-purple);
       --page-glow-a: rgba(91, 44, 145, 0.08);
       --page-glow-b: rgba(91, 44, 145, 0.05);
@@ -66,24 +64,9 @@
       --row-alt: #FAF8FC;
       --row-hover: #F3EEF8;
       --head: var(--we-purple-soft);
-      --ok: #15803D;
-      --ok-bg: #ECFDF3;
-      --ok-border: #A7F3D0;
       --fail: #B91C1C;
       --fail-bg: #FEF2F2;
       --fail-border: #FECACA;
-      --run: #A16207;
-      --run-bg: #FFFBEB;
-      --run-border: #FDE68A;
-      --blocked: #C2410C;
-      --blocked-bg: #FFF7ED;
-      --blocked-border: #FDBA74;
-      --pending: #6B6875;
-      --pending-bg: #F4F3F6;
-      --code-bg: #1E1A28;
-      --code-text: #EDE9F4;
-      --code-border: #2E2838;
-      --inspector-surface: #FAF8FC;
       --focus-ring: 0 0 0 3px rgba(91, 44, 145, 0.28);
     }
 
@@ -106,8 +89,6 @@
       --we-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
       --placeholder: #7A7585;
       --panel-head-bg: linear-gradient(180deg, #2E2440 0%, var(--we-surface) 160%);
-      --inspector-head-bg: linear-gradient(180deg, #2E2440 0%, var(--we-surface) 120%);
-      --step-body-bg: #1A1623;
       --table-head-bg: #4A2478;
       --page-glow-a: rgba(91, 44, 145, 0.22);
       --page-glow-b: rgba(91, 44, 145, 0.12);
@@ -117,24 +98,9 @@
       --bot-border: #3A3348;
       --row-alt: #2A2438;
       --row-hover: #322B42;
-      --ok: #86EFAC;
-      --ok-bg: #052E16;
-      --ok-border: #166534;
       --fail: #FECACA;
       --fail-bg: #450A0A;
       --fail-border: #991B1B;
-      --run: #FDE68A;
-      --run-bg: #422006;
-      --run-border: #A16207;
-      --blocked: #FDBA74;
-      --blocked-bg: #431407;
-      --blocked-border: #C2410C;
-      --pending: #A8A3B3;
-      --pending-bg: #2A2438;
-      --code-bg: #12101A;
-      --code-text: #EDE9F4;
-      --code-border: #2E2838;
-      --inspector-surface: #1E1A28;
       --focus-ring: 0 0 0 3px rgba(155, 109, 212, 0.35);
       --accent: var(--we-purple);
       --accent-hover: var(--we-purple-hover);
@@ -160,7 +126,7 @@
     html[data-theme="dark"] body { color-scheme: dark; }
 
     .app {
-      max-width: 1600px;
+      max-width: 1100px;
       margin: 0 auto;
       display: flex;
       flex-direction: column;
@@ -257,52 +223,12 @@
       font-size: 0.85rem;
       line-height: 1.35;
     }
-    .mobile-tabs {
-      display: none;
-      gap: 8px;
-    }
-    .mobile-tabs button {
-      flex: 1;
-      padding: 10px 12px;
-      border-radius: var(--we-radius-sm);
-      background: var(--we-white);
-      color: var(--muted);
-      border: 1px solid var(--border);
-      font-weight: 600;
-      font-size: 0.88rem;
-      cursor: pointer;
-      font-family: inherit;
-    }
-    .mobile-tabs button.active {
-      background: var(--accent);
-      color: var(--we-on-accent);
-      border-color: var(--accent);
-    }
 
     .workspace {
       flex: 1;
       min-height: 0;
-      display: grid;
-      grid-template-columns: minmax(0, 55%) 8px minmax(280px, 45%);
-      gap: 0;
-    }
-
-    .split-handle {
-      cursor: col-resize;
-      background: transparent;
-      position: relative;
-    }
-    .split-handle::after {
-      content: "";
-      position: absolute;
-      inset: 18% 2px;
-      border-radius: 4px;
-      background: var(--we-purple-tint);
-      transition: background 0.15s ease;
-    }
-    .split-handle:hover::after,
-    .split-handle:active::after {
-      background: var(--accent);
+      display: flex;
+      flex-direction: column;
     }
 
     .panel {
@@ -314,6 +240,7 @@
       flex-direction: column;
       overflow: hidden;
       box-shadow: var(--we-shadow-sm);
+      flex: 1;
     }
 
     .panel-head {
@@ -337,32 +264,6 @@
       font-size: 0.75rem;
       font-weight: 500;
       margin-left: 8px;
-    }
-
-    .panel-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-    .panel-actions button,
-    .inspector-btn {
-      padding: 7px 12px;
-      border-radius: var(--we-radius-sm);
-      border: 1px solid var(--border);
-      background: var(--we-white);
-      color: var(--text);
-      font-size: 0.78rem;
-      font-weight: 600;
-      cursor: pointer;
-      font-family: inherit;
-      transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
-    }
-    .panel-actions button:hover,
-    .inspector-btn:hover {
-      border-color: var(--we-purple-tint);
-      background: var(--accent-soft);
-      color: var(--we-purple);
-    }
-    .panel-actions button:focus-visible,
-    .inspector-btn:focus-visible {
-      outline: none;
-      box-shadow: var(--focus-ring);
     }
 
     /* —— Chat —— */
@@ -424,15 +325,7 @@
       border-color: var(--user-border);
       color: var(--text);
       white-space: pre-wrap;
-      cursor: pointer;
       border-bottom-right-radius: 4px;
-      transition: box-shadow 0.15s ease;
-    }
-    .msg.user:hover { box-shadow: var(--we-shadow-sm); }
-    .msg.user.active-trace {
-      outline: 2px solid var(--accent);
-      outline-offset: 1px;
-      box-shadow: 0 0 0 4px rgba(91, 44, 145, 0.12);
     }
     .msg.assistant {
       align-self: flex-start;
@@ -454,9 +347,6 @@
       padding: 8px 14px;
       border-radius: 999px;
       max-width: 95%;
-    }
-    .msg.assistant.plain:not(.meta) {
-      /* error / network messages still readable */
     }
     .msg.error,
     .msg.assistant.plain.error {
@@ -631,219 +521,20 @@
       font-family: var(--we-mono);
     }
 
-    /* —— Execution Inspector —— */
-    .inspector-panel .panel-head {
-      background: var(--inspector-head-bg);
-    }
-    .inspector-body {
-      flex: 1;
-      overflow-y: auto;
-      padding: 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-      background: var(--inspector-surface);
-    }
-    .stat-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-    }
-    .stat {
-      background: var(--we-white);
-      border: 1px solid var(--border);
-      border-radius: var(--we-radius-sm);
-      padding: 10px 12px;
-      box-shadow: var(--we-shadow-sm);
-    }
-    .stat .label {
-      color: var(--muted);
-      font-size: 0.7rem;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      font-weight: 600;
-    }
-    .stat .value {
-      margin-top: 4px;
-      font-size: 0.86rem;
-      word-break: break-all;
-      font-family: var(--we-mono);
-      color: var(--text);
-    }
-
-    .status-pill {
-      display: inline-block;
-      padding: 3px 10px;
-      border-radius: 999px;
-      font-size: 0.75rem;
-      font-weight: 700;
-      border: 1px solid transparent;
-    }
-    .status-Running {
-      background: var(--run-bg);
-      color: var(--run);
-      border-color: var(--run-border);
-    }
-    .status-Success {
-      background: var(--ok-bg);
-      color: var(--ok);
-      border-color: var(--ok-border);
-    }
-    .status-Failed {
-      background: var(--fail-bg);
-      color: var(--fail);
-      border-color: var(--fail-border);
-    }
-    .status-Blocked {
-      background: var(--blocked-bg);
-      color: var(--blocked);
-      border-color: var(--blocked-border);
-    }
-
-    .timeline { display: flex; flex-direction: column; gap: 8px; }
-    .step {
-      border: 1px solid var(--border);
-      border-radius: var(--we-radius-sm);
-      background: var(--we-white);
-      overflow: hidden;
-      box-shadow: var(--we-shadow-sm);
-    }
-    .step-head {
-      display: flex;
-      gap: 10px;
-      align-items: flex-start;
-      padding: 10px 12px;
-      cursor: pointer;
-      user-select: none;
-      transition: background 0.12s ease;
-    }
-    .step-head:hover { background: var(--accent-soft); }
-    .step-icon {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      margin-top: 5px;
-      flex: 0 0 auto;
-    }
-    .icon-Pending { background: var(--pending); }
-    .icon-Running {
-      background: #CA8A04;
-      box-shadow: 0 0 0 3px rgba(202, 138, 4, 0.22);
-      animation: pulse 1.2s ease-in-out infinite;
-    }
-    .icon-Success { background: var(--ok); }
-    .icon-Failed { background: var(--fail); }
-    .icon-Blocked { background: var(--blocked); }
-    @keyframes pulse {
-      0%, 100% { box-shadow: 0 0 0 3px rgba(202, 138, 4, 0.22); }
-      50% { box-shadow: 0 0 0 5px rgba(202, 138, 4, 0.12); }
-    }
-    .step-main { flex: 1; min-width: 0; }
-    .step-title { font-size: 0.86rem; font-weight: 650; color: var(--text); }
-    .step-summary {
-      color: var(--muted);
-      font-size: 0.78rem;
-      margin-top: 2px;
-      word-break: break-word;
-    }
-    .step-dur {
-      color: var(--we-purple);
-      font-size: 0.75rem;
-      font-family: var(--we-mono);
-      white-space: nowrap;
-      font-weight: 600;
-    }
-    .step-body {
-      display: none;
-      border-top: 1px solid var(--border);
-      padding: 10px 12px;
-      background: var(--step-body-bg);
-    }
-    .step.open .step-body { display: block; }
-    .step-error {
-      color: var(--fail);
-      font-size: 0.8rem;
-      margin-bottom: 8px;
-      padding: 8px 10px;
-      background: var(--fail-bg);
-      border: 1px solid var(--fail-border);
-      border-radius: 6px;
-    }
-    pre.json {
-      margin: 0;
-      padding: 10px 12px;
-      border-radius: 6px;
-      background: var(--code-bg);
-      color: var(--code-text);
-      border: 1px solid var(--code-border);
-      overflow: auto;
-      max-height: 240px;
-      font-size: 0.72rem;
-      line-height: 1.45;
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-family: var(--we-mono);
-      direction: ltr;
-      text-align: left;
-      unicode-bidi: isolate;
-    }
-    pre.json.prompt-json {
-      max-height: 520px;
-    }
-    .section-title {
-      margin: 4px 0 0;
-      font-size: 0.75rem;
-      color: var(--we-purple);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      font-weight: 700;
-    }
-    .empty-inspector {
-      color: var(--muted);
-      font-size: 0.9rem;
-      line-height: 1.55;
-      padding: 28px 12px;
-      text-align: center;
-      background: var(--we-white);
-      border: 1px dashed var(--border);
-      border-radius: var(--we-radius);
-    }
-    .empty-inspector::before {
-      content: "◇";
-      display: block;
-      font-size: 1.4rem;
-      color: var(--we-purple-tint);
-      margin-bottom: 8px;
-    }
-
-    .collapsed-inspector .inspector-panel { display: none; }
-    .collapsed-inspector .workspace { grid-template-columns: 1fr; }
-    .collapsed-inspector .split-handle { display: none; }
-
     @media (max-width: 900px) {
       body { padding: 10px; }
       .app { height: auto; min-height: calc(100vh - 20px); gap: 10px; }
       .app-header { padding: 12px 14px; }
-      .brand-mark { width: 42px; height: 42px; font-size: 0.95rem; }
+      .brand-mark { width: 42px; height: 42px; }
       .brand-text h1 { font-size: 1.05rem; }
-      .mobile-tabs { display: flex; }
-      .workspace {
-        display: block;
-        min-height: 70vh;
-      }
-      .split-handle { display: none; }
-      .chat-panel, .inspector-panel { min-height: 65vh; }
-      .workspace.show-inspector .chat-panel { display: none; }
-      .workspace:not(.show-inspector) .inspector-panel { display: none; }
-      .stat-grid { grid-template-columns: 1fr; }
+      .workspace { min-height: 70vh; }
+      .chat-panel { min-height: 65vh; }
     }
 
     @media (max-width: 480px) {
       .brand-text p { display: none; }
       form { flex-direction: column; }
       button.send { width: 100%; }
-      .panel-actions { width: 100%; }
-      .panel-actions button { flex: 1; }
     }
 
   </style>
@@ -867,15 +558,10 @@
         </button>
       </div>
     </header>
-    <div class="mobile-tabs">
-      <button type="button" id="tabChat" class="active">Chat</button>
-      <button type="button" id="tabInspector">Inspector</button>
-    </div>
     <div class="workspace" id="workspace">
       <section class="panel chat-panel">
         <div class="panel-head">
           <h2>AI Chat <span class="panel-head-meta">Ask in Arabic or English</span></h2>
-          <button type="button" class="inspector-btn" id="toggleInspector">Toggle inspector</button>
         </div>
         <div class="chat" id="chat"></div>
         <div class="composer">
@@ -891,40 +577,6 @@
           </div>
         </div>
       </section>
-      <div class="split-handle" id="splitHandle" title="Drag to resize"></div>
-      <aside class="panel inspector-panel" id="inspectorPanel">
-        <div class="panel-head">
-          <h2>Execution Inspector</h2>
-          <div class="panel-actions">
-            <button type="button" id="copyQuery">Copy Query</button>
-            <button type="button" id="copyTrace">Copy Trace</button>
-            <button type="button" id="clearInspector">Clear</button>
-          </div>
-        </div>
-        <div class="inspector-body" id="inspectorBody">
-          <div class="empty-inspector" id="inspectorEmpty">
-            Send a chat message to capture a live execution trace. Click a previous user message to re-open its trace.
-          </div>
-          <div id="inspectorContent" hidden>
-            <div class="stat-grid">
-              <div class="stat"><div class="label">Execution ID</div><div class="value" id="statExecId">—</div></div>
-              <div class="stat"><div class="label">Status</div><div class="value" id="statStatus">—</div></div>
-              <div class="stat"><div class="label">Total time</div><div class="value" id="statTotal">—</div></div>
-              <div class="stat"><div class="label">AI / Model</div><div class="value" id="statAi">—</div></div>
-            </div>
-            <h3 class="section-title">Outbound AI prompt</h3>
-            <pre class="json prompt-json" id="promptJson">{}</pre>
-            <h3 class="section-title">AI tool request → backend</h3>
-            <pre class="json" id="toolJson">{}</pre>
-            <h3 class="section-title">CRM query</h3>
-            <pre class="json" id="queryJson">{}</pre>
-            <h3 class="section-title">Metrics</h3>
-            <pre class="json" id="metricsJson">{}</pre>
-            <h3 class="section-title">Timeline</h3>
-            <div class="timeline" id="timeline"></div>
-          </div>
-        </div>
-      </aside>
     </div>
   </div>
   <script>
@@ -932,11 +584,6 @@
     const form = document.getElementById("form");
     const input = document.getElementById("message");
     const send = document.getElementById("send");
-    const app = document.getElementById("app");
-    const workspace = document.getElementById("workspace");
-    const inspectorContent = document.getElementById("inspectorContent");
-    const inspectorEmpty = document.getElementById("inspectorEmpty");
-    const timeline = document.getElementById("timeline");
     const themeToggle = document.getElementById("themeToggle");
     const themeToggleLabel = document.getElementById("themeToggleLabel");
     const THEME_KEY = "we-crm-theme";
@@ -962,10 +609,6 @@
     }
 
     let conversationId = null;
-    let activeExecutionId = null;
-    let pollTimer = null;
-    let latestTrace = null;
-    const tracesByMessage = new Map();
 
     const HIDDEN_KEYS = new Set([
       "salesorderid", "accountid", "contactid", "leadid", "@odata.etag", "odata.etag"
@@ -996,7 +639,6 @@
       if (value === null || value === undefined || value === "") return "—";
       const kindNorm = String(kind || "").toLowerCase();
       if (["lookup", "customer", "owner", "uniqueidentifier", "guid"].includes(kindNorm) || isGuidLike(value)) {
-        // Raw lookup/GUID values are not useful without formatted annotations.
         if (isGuidLike(value) || (typeof value === "string" && isGuidLike(String(value)))) return "—";
       }
       if (kindNorm === "money" || (typeof value === "number" && /amount|price|revenue|total/i.test(key || ""))) {
@@ -1021,12 +663,10 @@
       if (Object.prototype.hasOwnProperty.call(row, key) && row[key] != null && row[key] !== "") {
         return { value: row[key], kind: column.kind };
       }
-      // Choice columns use *_label; fall back to raw code when label missing.
       if (typeof key === "string" && key.endsWith("_label")) {
         const raw = key.slice(0, -"_label".length);
         if (Object.prototype.hasOwnProperty.call(row, raw)) return { value: row[raw], kind: column.kind };
       }
-      // Formatted annotation companion.
       if (typeof key === "string" && key.endsWith("_formatted")) {
         const raw = key.slice(0, -"_formatted".length);
         if (Object.prototype.hasOwnProperty.call(row, raw)) return { value: row[raw], kind: column.kind };
@@ -1127,7 +767,6 @@
       let cols = metaCols && metaCols.length ? metaCols : pickColumns(rows);
       cols = dropAllEmptyLookupColumns(cols, rows);
       if (!cols.length) return "";
-      // Prefer primary name / identity columns on the left for readable LTR tables.
       const ordered = prioritizeDisplayColumns(cols);
       const head = ordered.map(c => {
         const cls = columnClass(c, "");
@@ -1164,15 +803,11 @@
       const lines = String(reply || "").split(/\r?\n/);
       return lines.filter(line => !/^\s*\d+\.\s+/.test(line)).join("\n").trim();
     }
-    function addPlainMessage(role, text, executionId) {
+    function addPlainMessage(role, text) {
       const div = document.createElement("div");
       div.className = "msg " + role + " plain" + (hasArabic(text) ? " rtl" : "");
       if (hasArabic(text)) div.setAttribute("dir", "rtl");
       div.textContent = text;
-      if (role === "user" && executionId) {
-        div.dataset.executionId = executionId;
-        div.addEventListener("click", () => selectExecution(executionId, div));
-      }
       chat.appendChild(div);
       chat.scrollTop = chat.scrollHeight;
       return div;
@@ -1196,7 +831,6 @@
         const summaryLines = summary.split("\n");
         const summaryDir = ar ? ' dir="rtl"' : "";
         div.classList.add("has-table");
-        // Keep Arabic summary RTL, but never flip the CRM data table (dir=ltr on .table-wrap).
         div.innerHTML =
           (summary
             ? `<p class="msg-summary"${summaryDir}>${escapeHtml(summaryLines[0] || summary)}</p>`
@@ -1213,111 +847,6 @@
       chat.scrollTop = chat.scrollHeight;
     }
 
-    function pretty(obj) {
-      try { return JSON.stringify(obj ?? {}, null, 2); } catch { return String(obj); }
-    }
-
-    // Normalize enum values that may serialize as numbers or strings.
-    const TRACE_STATUS = { 0: "Running", 1: "Success", 2: "Failed", 3: "Blocked" };
-    const STEP_STATUS = { 0: "Pending", 1: "Running", 2: "Success", 3: "Failed", 4: "Blocked" };
-    function normalizeStatus(value, map) {
-      if (value == null || value === "") return "Pending";
-      if (typeof value === "number" || /^\d+$/.test(String(value))) {
-        return map[Number(value)] || String(value);
-      }
-      return String(value);
-    }
-
-    function renderTrace(trace) {
-      latestTrace = trace;
-      if (!trace) {
-        inspectorEmpty.hidden = false;
-        inspectorContent.hidden = true;
-        return;
-      }
-      inspectorEmpty.hidden = true;
-      inspectorContent.hidden = false;
-      const traceStatus = normalizeStatus(trace.status, TRACE_STATUS);
-      document.getElementById("statExecId").textContent = trace.executionId || "—";
-      document.getElementById("statStatus").innerHTML =
-        `<span class="status-pill status-${escapeHtml(traceStatus)}">${escapeHtml(traceStatus)}</span>`;
-      document.getElementById("statTotal").textContent =
-        trace.totalDurationMs != null ? `${trace.totalDurationMs} ms` : "—";
-      document.getElementById("statAi").textContent =
-        `${trace.aiProvider || "?"} / ${trace.aiModel || "?"}`;
-      document.getElementById("promptJson").textContent = pretty(trace.outboundAiPrompt || {});
-      document.getElementById("toolJson").textContent = pretty({
-        tool: trace.selectedTool,
-        arguments: trace.toolArguments,
-        privacySafe: trace.privacySafe,
-        outboundContainedCrmRecords: trace.outboundContainedCrmRecords
-      });
-      document.getElementById("queryJson").textContent = pretty(trace.crmQuery || {});
-      document.getElementById("metricsJson").textContent = pretty(trace.metrics || {});
-
-      const openIds = new Set([...timeline.querySelectorAll(".step.open")].map(el => el.dataset.stepId));
-      timeline.innerHTML = "";
-      (trace.steps || []).forEach(step => {
-        const stepStatus = normalizeStatus(step.status, STEP_STATUS);
-        const el = document.createElement("div");
-        el.className = "step" + (openIds.has(step.stepId) ? " open" : "");
-        el.dataset.stepId = step.stepId;
-        el.innerHTML =
-          `<div class="step-head">` +
-          `<span class="step-icon icon-${escapeHtml(stepStatus)}"></span>` +
-          `<div class="step-main"><div class="step-title">${escapeHtml(step.name)}</div>` +
-          `<div class="step-summary">${escapeHtml(step.summary || step.error || "")}</div></div>` +
-          `<div class="step-dur">${step.durationMs != null ? step.durationMs + " ms" : ""}</div>` +
-          `</div>` +
-          `<div class="step-body">` +
-          (step.error ? `<div class="step-error">${escapeHtml(step.error)}</div>` : "") +
-          `<pre class="json">${escapeHtml(pretty(step.details || {}))}</pre>` +
-          `</div>`;
-        el.querySelector(".step-head").addEventListener("click", () => el.classList.toggle("open"));
-        timeline.appendChild(el);
-      });
-    }
-
-    async function fetchTrace(executionId) {
-      const res = await fetch(`/api/diagnostics/executions/${encodeURIComponent(executionId)}`);
-      if (!res.ok) return null;
-      return res.json();
-    }
-
-    function stopPolling() {
-      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-    }
-
-    function startPolling(executionId) {
-      stopPolling();
-      activeExecutionId = executionId;
-      const tick = async () => {
-        try {
-          const trace = await fetchTrace(executionId);
-          if (!trace) return;
-          tracesByMessage.set(executionId, trace);
-          renderTrace(trace);
-          if (trace.status !== "Running") stopPolling();
-        } catch { /* ignore transient poll errors */ }
-      };
-      tick();
-      pollTimer = setInterval(tick, 400);
-    }
-
-    function selectExecution(executionId, userEl) {
-      document.querySelectorAll(".msg.user").forEach(el => el.classList.remove("active-trace"));
-      if (userEl) userEl.classList.add("active-trace");
-      activeExecutionId = executionId;
-      const cached = tracesByMessage.get(executionId);
-      if (cached) renderTrace(cached);
-      startPolling(executionId);
-      if (window.matchMedia("(max-width: 900px)").matches) {
-        workspace.classList.add("show-inspector");
-        document.getElementById("tabInspector").classList.add("active");
-        document.getElementById("tabChat").classList.remove("active");
-      }
-    }
-
     input.addEventListener("input", syncInputDirection);
     input.addEventListener("paste", () => setTimeout(syncInputDirection, 0));
 
@@ -1325,19 +854,15 @@
       e.preventDefault();
       const message = input.value.trim();
       if (!message) return;
-      const executionId = (crypto.randomUUID && crypto.randomUUID().replaceAll("-", "")) ||
-        (Date.now().toString(16) + Math.random().toString(16).slice(2));
-      const userEl = addPlainMessage("user", message, executionId);
-      userEl.classList.add("active-trace");
+      addPlainMessage("user", message);
       input.value = "";
       syncInputDirection();
       send.disabled = true;
-      startPolling(executionId);
       try {
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message, conversationId, executionId })
+          body: JSON.stringify({ message, conversationId })
         });
         const text = await res.text();
         let data = null;
@@ -1347,14 +872,10 @@
           errEl.classList.add("error");
         } else {
           conversationId = data.conversationId;
-          const eid = data.executionId || executionId;
-          userEl.dataset.executionId = eid;
-          selectExecution(eid, userEl);
           addAssistantResult(data);
           if (data.privacySafeToolExecution) {
             addPlainMessage("meta", "Privacy-safe: tool=" + (data.selectedTool || "?") +
               "; CRM→AI records=" + (data.outboundAiContainedCrmRecords ? "YES" : "NO") +
-              (eid ? ("; exec=" + eid.slice(0, 8)) : "") +
               (data.crmWhoAmIUserId ? ("; WhoAmI=" + data.crmWhoAmIUserId) : ""));
           }
         }
@@ -1367,61 +888,7 @@
       }
     });
 
-    document.getElementById("clearInspector").addEventListener("click", () => {
-      stopPolling();
-      latestTrace = null;
-      activeExecutionId = null;
-      renderTrace(null);
-      document.querySelectorAll(".msg.user").forEach(el => el.classList.remove("active-trace"));
-    });
-
-    document.getElementById("copyQuery").addEventListener("click", async () => {
-      const q = latestTrace && latestTrace.crmQuery
-        ? (latestTrace.crmQuery.relativeRequestUri || latestTrace.crmQuery.readableQuery || pretty(latestTrace.crmQuery))
-        : "";
-      if (!q) return;
-      await navigator.clipboard.writeText(typeof q === "string" ? q : pretty(q));
-    });
-
-    document.getElementById("copyTrace").addEventListener("click", async () => {
-      if (!activeExecutionId) return;
-      const res = await fetch(`/api/diagnostics/executions/${encodeURIComponent(activeExecutionId)}/safe-text`);
-      const text = await res.text();
-      await navigator.clipboard.writeText(text);
-    });
-
-    document.getElementById("toggleInspector").addEventListener("click", () => {
-      app.classList.toggle("collapsed-inspector");
-    });
-
-    document.getElementById("tabChat").addEventListener("click", () => {
-      workspace.classList.remove("show-inspector");
-      document.getElementById("tabChat").classList.add("active");
-      document.getElementById("tabInspector").classList.remove("active");
-    });
-    document.getElementById("tabInspector").addEventListener("click", () => {
-      workspace.classList.add("show-inspector");
-      document.getElementById("tabInspector").classList.add("active");
-      document.getElementById("tabChat").classList.remove("active");
-    });
-
-    // Resizable split
-    const handle = document.getElementById("splitHandle");
-    let dragging = false;
-    handle.addEventListener("mousedown", (e) => {
-      dragging = true;
-      e.preventDefault();
-    });
-    window.addEventListener("mouseup", () => { dragging = false; });
-    window.addEventListener("mousemove", (e) => {
-      if (!dragging || window.matchMedia("(max-width: 900px)").matches) return;
-      const rect = workspace.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const pct = Math.min(75, Math.max(35, (x / rect.width) * 100));
-      workspace.style.gridTemplateColumns = `minmax(0, ${pct}%) 8px minmax(280px, ${100 - pct}%)`;
-    });
-
-    addPlainMessage("meta", "Conversation ready. Execution Inspector shows live Groq tool args + Dynamics OData path (sanitized).");
+    addPlainMessage("meta", "Conversation ready. Ask about accounts, contacts, leads, or sales orders.");
   </script>
 </body>
 </html>

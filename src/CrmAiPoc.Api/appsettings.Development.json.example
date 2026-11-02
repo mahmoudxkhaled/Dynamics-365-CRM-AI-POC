@@ -33,7 +33,6 @@
     "AiMetadataCatalogMaxChars": 6000,
     "WarmApprovedMetadataOnStartup": true,
     "RestrictToLoopback": true,
-    "EnableExecutionInspector": true,
     "BusinessTimeZoneId": "Africa/Cairo",
     "MetadataCacheSeconds": 3600,
     "ApprovedEntities": [ "account", "contact", "salesorder", "lead" ],

@@ -1,8 +1,6 @@
-using System.Diagnostics;
 using CrmAiPoc.Api.Crm.Metadata;
 using CrmAiPoc.Api.Crm.Mock;
 using CrmAiPoc.Api.Crm.Query;
-using CrmAiPoc.Api.Diagnostics;
 using CrmAiPoc.Api.Security;
 
 namespace CrmAiPoc.Api.Crm.Generic;
@@ -16,20 +14,17 @@ public sealed class MockGenericCrmRepository : IGenericCrmRepository
     private readonly EntityApprovalPolicy _policy;
     private readonly IGenericCrmQueryBuilder _builder;
     private readonly ICrmAuthorizationService _auth;
-    private readonly IExecutionTracer _tracer;
 
     public MockGenericCrmRepository(
         ICrmMetadataService metadata,
         EntityApprovalPolicy policy,
         IGenericCrmQueryBuilder builder,
-        ICrmAuthorizationService auth,
-        IExecutionTracer? tracer = null)
+        ICrmAuthorizationService auth)
     {
         _metadata = metadata;
         _policy = policy;
         _builder = builder;
         _auth = auth;
-        _tracer = tracer ?? NullExecutionTracer.Instance;
     }
 
     public string ProviderName => "Mock";
@@ -82,84 +77,19 @@ public sealed class MockGenericCrmRepository : IGenericCrmRepository
             RelatedFromId = plan.RelatedFromId
         };
 
-        var buildSw = Stopwatch.StartNew();
-        var buildStep = _tracer.Begin(ExecutionSteps.QueryConstruction, "Building OData query from plan (Mock)");
         var built = _builder.Build(plan, entity, relatedFrom);
-        buildSw.Stop();
         if (!built.Success || string.IsNullOrWhiteSpace(built.RelativeRequestUri))
         {
-            if (buildStep is not null)
-            {
-                _tracer.Complete(buildStep.StepId, ExecutionStepStatus.Failed, error: built.Error);
-            }
-
             return Fail(plan, built.Error ?? "Invalid CRM query plan.");
         }
 
-        var safePath = TraceSanitizer.RedactODataPath(built.RelativeRequestUri);
-        var crmQuery = new
-        {
-            method = "OData",
-            httpMethod = "GET",
-            entity = logical,
-            entitySetName = entity.EntitySetName,
-            operation = built.Operation.ToString(),
-            selectFields = built.SelectFields,
-            filters = built.AppliedFilterSummary,
-            sort = built.SortSummary,
-            limit = built.Limit,
-            relatedFromEntity = plan.RelatedFromEntity,
-            relativeRequestUri = safePath,
-            readableQuery = safePath,
-            provider = ProviderName
-        };
-        _tracer.SetCrmQuery(crmQuery);
-        if (buildStep is not null)
-        {
-            _tracer.Complete(buildStep.StepId, ExecutionStepStatus.Success, summary: safePath, details: crmQuery);
-        }
-
-        var mockHttpSw = Stopwatch.StartNew();
-        var reqStep = _tracer.Begin(ExecutionSteps.DynamicsHttpRequest, "Mock CRM read");
         var rows = LoadRows(logical);
         rows = ApplyRelationship(rows, plan, entity, relatedFrom);
         rows = ApplyRelative(rows, plan);
         rows = ApplyFilters(rows, plan, entity);
-        mockHttpSw.Stop();
-        _tracer.SetMetric("crmHttpMs", mockHttpSw.ElapsedMilliseconds);
-        if (reqStep is not null)
-        {
-            _tracer.Complete(
-                reqStep.StepId,
-                ExecutionStepStatus.Success,
-                summary: $"Mock GET matched={rows.Count}",
-                details: new { httpStatus = 200, durationMs = mockHttpSw.ElapsedMilliseconds });
-        }
-
-        _tracer.Instant(
-            ExecutionSteps.DynamicsHttpResponse,
-            ExecutionStepStatus.Success,
-            summary: "Mock CRM response (counts only; rows not stored in trace)",
-            details: new { httpStatus = 200, provider = ProviderName, matched = rows.Count },
-            durationMs: mockHttpSw.ElapsedMilliseconds);
 
         if (plan.Operation == CrmQueryOperation.Count)
         {
-            _tracer.SetCrmQuery(new
-            {
-                crmQuery.method,
-                crmQuery.httpMethod,
-                crmQuery.entity,
-                crmQuery.entitySetName,
-                crmQuery.operation,
-                crmQuery.selectFields,
-                crmQuery.filters,
-                crmQuery.sort,
-                crmQuery.limit,
-                crmQuery.relativeRequestUri,
-                httpStatus = 200,
-                recordCount = rows.Count
-            });
             return new GenericCrmQueryResult
             {
                 Entity = logical,
@@ -178,21 +108,6 @@ public sealed class MockGenericCrmRepository : IGenericCrmRepository
         rows = ApplySort(rows, plan, entity).Take(built.Limit).ToList();
         // Project to validated $select keys so table columns align with the query plan.
         rows = ProjectSelect(rows, built.SelectFields, entity);
-        _tracer.SetCrmQuery(new
-        {
-            crmQuery.method,
-            crmQuery.httpMethod,
-            crmQuery.entity,
-            crmQuery.entitySetName,
-            crmQuery.operation,
-            crmQuery.selectFields,
-            crmQuery.filters,
-            crmQuery.sort,
-            crmQuery.limit,
-            crmQuery.relativeRequestUri,
-            httpStatus = 200,
-            recordCount = rows.Count
-        });
         return new GenericCrmQueryResult
         {
             Entity = logical,

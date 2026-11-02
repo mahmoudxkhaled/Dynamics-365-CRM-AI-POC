@@ -146,7 +146,7 @@ Browser
   → DynamicsGenericCrmRepository | MockGenericCrmRepository
   → DynamicsCrmHttp (live) → Dynamics 365 On-Prem v9.1
   → GenericCrmReplyFormatter (local; CRM rows never sent to Groq)
-  → Browser (+ Execution Inspector stages)
+  → Browser
 ```
 
 ---

@@ -1,11 +1,8 @@
 using System.Globalization;
-using System.Text.Json;
 using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Dynamics;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
-using System.Diagnostics;
-using CrmAiPoc.Api.Diagnostics;
 using CrmAiPoc.Api.Models;
 using CrmAiPoc.Api.Security;
 using Microsoft.Extensions.AI;
@@ -55,11 +52,6 @@ public sealed partial class ChatService
     private readonly ICrmAiMetadataCatalogService _metadataCatalog;
     private readonly CrmOptions _crmOptions;
     private readonly AiOptions _aiOptions;
-    private readonly GroqOptions _groqOptions;
-    private readonly GeminiOptions _geminiOptions;
-    private readonly OpenAiOptions _openAiOptions;
-    private readonly IExecutionTraceStore _traceStore;
-    private readonly IExecutionTracer _tracer;
     private readonly ILogger<ChatService> _logger;
 
     public ChatService(
@@ -73,11 +65,6 @@ public sealed partial class ChatService
         ICrmAiMetadataCatalogService metadataCatalog,
         IOptions<CrmOptions> crmOptions,
         IOptions<AiOptions> aiOptions,
-        IOptions<GroqOptions> groqOptions,
-        IOptions<GeminiOptions> geminiOptions,
-        IOptions<OpenAiOptions> openAiOptions,
-        IExecutionTraceStore traceStore,
-        IExecutionTracer tracer,
         ILogger<ChatService> logger)
     {
         _chatClient = chatClient;
@@ -90,11 +77,6 @@ public sealed partial class ChatService
         _metadataCatalog = metadataCatalog;
         _crmOptions = crmOptions.Value;
         _aiOptions = aiOptions.Value;
-        _groqOptions = groqOptions.Value;
-        _geminiOptions = geminiOptions.Value;
-        _openAiOptions = openAiOptions.Value;
-        _traceStore = traceStore;
-        _tracer = tracer;
         _logger = logger;
     }
 
@@ -108,69 +90,22 @@ public sealed partial class ChatService
         var session = _conversations.GetOrCreate(request.ConversationId);
         _tools.Session = session;
         var language = DetectLanguageHint(request.Message);
-        var trace = _traceStore.Start(session.ConversationId, request.Message, request.ExecutionId);
-        _tracer.SetAi(ResolveAiProviderName(), ResolveAiModelName());
-        _tracer.Instant(
-            ExecutionSteps.HttpChatRequestReceived,
-            ExecutionStepStatus.Success,
-            summary: $"conversationId={session.ConversationId}; lang={language}",
-            details: new
-            {
-                conversationId = session.ConversationId,
-                messageLength = request.Message.Trim().Length,
-                languageHint = language
-            });
-
-        try
-        {
-            return await ChatCoreAsync(request, session, language, trace, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _tracer.Instant(
-                ExecutionSteps.FinalChatResponse,
-                ExecutionStepStatus.Failed,
-                summary: "Unhandled chat failure",
-                error: ex.Message);
-            _traceStore.Complete(trace.ExecutionId, ExecutionTraceStatus.Failed);
-            throw;
-        }
+        return await ChatCoreAsync(request, session, language, cancellationToken);
     }
 
     private async Task<ChatResponseDto> ChatCoreAsync(
         ChatRequestDto request,
         ConversationSession session,
         string language,
-        ExecutionTrace trace,
         CancellationToken cancellationToken)
     {
         _logger.LogInformation(
-            "User question: conversationId={ConversationId}, executionId={ExecutionId}, messageLength={Length}, languageHint={Hint}",
+            "User question: conversationId={ConversationId}, messageLength={Length}, languageHint={Hint}",
             session.ConversationId,
-            trace.ExecutionId,
             request.Message.Trim().Length,
             language);
 
         var catalog = await _metadataCatalog.BuildApprovedCatalogAsync(cancellationToken);
-        if (catalog.Enabled)
-        {
-            _tracer.Instant(
-                ExecutionSteps.MetadataCatalogPrepared,
-                catalog.Success ? ExecutionStepStatus.Success : ExecutionStepStatus.Failed,
-                summary: catalog.Success
-                    ? $"Approved metadata catalog entities={catalog.EntityCount}; attrs={catalog.AttributeCount}; chars={catalog.CharacterCount}"
-                    : $"Metadata catalog omitted: {catalog.Error}",
-                details: new
-                {
-                    catalog.Enabled,
-                    catalog.Success,
-                    catalog.EntityCount,
-                    catalog.AttributeCount,
-                    catalog.CharacterCount,
-                    catalog.Error
-                },
-                error: catalog.Success ? null : catalog.Error);
-        }
 
         var outboundHistory = BuildOutboundHistory(session, request.Message.Trim(), catalog);
         var audit = OutboundAiPayloadAuditor.Audit(outboundHistory);
@@ -183,24 +118,8 @@ public sealed partial class ChatService
             audit.SuspiciousCrmRecordText,
             audit.SafeForLiveCrm);
 
-        _tracer.SetPrivacy(privacySafe: true, outboundContainedCrm: !audit.SafeForLiveCrm);
-        _tracer.Instant(
-            ExecutionSteps.PrivacyVerification,
-            audit.SafeForLiveCrm ? ExecutionStepStatus.Success : ExecutionStepStatus.Blocked,
-            summary: audit.SafeForLiveCrm
-                ? "Outbound AI payload contains no CRM records"
-                : "Outbound AI payload blocked — CRM text detected",
-            details: new
-            {
-                audit.MessageCount,
-                audit.ContainsFunctionResults,
-                audit.SuspiciousCrmRecordText,
-                audit.SafeForLiveCrm
-            });
-
         if (!audit.SafeForLiveCrm)
         {
-            _traceStore.Complete(trace.ExecutionId, ExecutionTraceStatus.Blocked);
             throw new InvalidOperationException(
                 "Refusing to call the AI provider because the outbound payload appears to contain CRM tool results or record text.");
         }
@@ -212,64 +131,7 @@ public sealed partial class ChatService
             Temperature = 0.1f
         };
 
-        var toolNames = tools.OfType<AIFunction>().Select(t => t.Name).ToArray();
-        var outboundPrompt = new
-        {
-            provider = ResolveAiProviderName(),
-            model = ResolveAiModelName(),
-            temperature = chatOptions.Temperature,
-            tools = toolNames,
-            messages = outboundHistory.Select(m => new
-            {
-                role = m.Role.Value,
-                content = m.Text ?? string.Empty
-            }).ToArray()
-        };
-        _tracer.SetOutboundAiPrompt(outboundPrompt);
-
-        _tracer.Instant(
-            ExecutionSteps.GroqApiRequestPrepared,
-            ExecutionStepStatus.Success,
-            summary: $"provider={ResolveAiProviderName()}; messages={outboundHistory.Count}; tools=[{string.Join(',', toolNames)}]",
-            details: new
-            {
-                provider = ResolveAiProviderName(),
-                model = ResolveAiModelName(),
-                toolCount = tools.Count,
-                toolNames,
-                outboundMessageCount = outboundHistory.Count,
-                outboundRoles = outboundHistory.Select(m => m.Role.Value).ToArray()
-            });
-
-        var groqStep = _tracer.Begin(ExecutionSteps.GroqApiResponseReceived, "Waiting for AI tool call…");
-        var groqSw = Stopwatch.StartNew();
-        ChatResponse modelResponse;
-        try
-        {
-            modelResponse = await GetResponseWithRetryAsync(outboundHistory, chatOptions, cancellationToken);
-            groqSw.Stop();
-            _tracer.SetMetric("groqApiMs", groqSw.ElapsedMilliseconds);
-            if (groqStep is not null)
-            {
-                _tracer.Complete(
-                    groqStep.StepId,
-                    ExecutionStepStatus.Success,
-                    summary: $"AI responded in {groqSw.ElapsedMilliseconds}ms",
-                    details: new { durationMs = groqSw.ElapsedMilliseconds });
-            }
-        }
-        catch (Exception ex)
-        {
-            groqSw.Stop();
-            _tracer.SetMetric("groqApiMs", groqSw.ElapsedMilliseconds);
-            if (groqStep is not null)
-            {
-                _tracer.Complete(groqStep.StepId, ExecutionStepStatus.Failed, error: ex.Message);
-            }
-
-            _traceStore.Complete(trace.ExecutionId, ExecutionTraceStatus.Failed);
-            throw;
-        }
+        var modelResponse = await GetResponseWithRetryAsync(outboundHistory, chatOptions, cancellationToken);
 
         var functionCalls = modelResponse.Messages
             .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
@@ -284,19 +146,8 @@ public sealed partial class ChatService
                 var refuse = language == "ar"
                     ? "هذه العملية مرفوضة. المساعد للقراءة فقط ولا ينفّذ إنشاء أو تعديل أو حذف."
                     : "Refused. This assistant is read-only and will not create, update, or delete CRM records.";
-                _tracer.Instant(
-                    ExecutionSteps.AiToolSelected,
-                    ExecutionStepStatus.Blocked,
-                    summary: "Write/delete intent — no CRM tool executed");
-                _tracer.Instant(
-                    ExecutionSteps.BackendValidation,
-                    ExecutionStepStatus.Blocked,
-                    summary: "Write/delete intent blocked before CRM query");
-                _tracer.Instant(ExecutionSteps.FinalChatResponse, ExecutionStepStatus.Blocked, summary: refuse);
                 session.Add(new ChatMessage(ChatRole.Assistant, refuse));
-                var refused = CreateResponse(session, refuse, true, selectedTool: null, data: null, whoAmI: null, outboundWasSafe: audit.SafeForLiveCrm);
-                _traceStore.Complete(trace.ExecutionId, ExecutionTraceStatus.Blocked);
-                return refused;
+                return CreateResponse(session, refuse, true, selectedTool: null, data: null, whoAmI: null, outboundWasSafe: audit.SafeForLiveCrm);
             }
 
             // Model sometimes replies in text for Arabic count questions instead of calling a tool.
@@ -315,31 +166,13 @@ public sealed partial class ChatService
                 _logger.LogInformation(
                     "No tool selected by model; applying entity intent fallback for {Entity}.",
                     fallbackEntity);
-                _tracer.Instant(
-                    ExecutionSteps.AiToolSelected,
-                    ExecutionStepStatus.Success,
-                    summary: "Local entity intent fallback → query_crm",
-                    details: TraceSanitizer.SanitizeToolArguments(args));
-                _tracer.SetTool("query_crm", args);
                 return await HandleQueryCrmPrivacySafeAsync(
                     session, synthetic, language, audit.SafeForLiveCrm, cancellationToken);
             }
 
             var text = LocalCrmReplyFormatter.FormatRefusalOrText(modelResponse.Text, language);
-            var isBlocked = LooksLikeWriteRefusal(request.Message) || LooksLikeWriteRefusal(text);
-            _tracer.Instant(
-                ExecutionSteps.AiToolSelected,
-                isBlocked ? ExecutionStepStatus.Blocked : ExecutionStepStatus.Success,
-                summary: isBlocked ? "No CRM tool — request refused / out of scope" : "No tool call; text reply only",
-                details: new { replyPreview = TraceSanitizer.PreviewMessage(text, 160) });
-            _tracer.Instant(
-                ExecutionSteps.FinalChatResponse,
-                isBlocked ? ExecutionStepStatus.Blocked : ExecutionStepStatus.Success,
-                summary: "Final assistant text (no CRM query)");
             session.Add(new ChatMessage(ChatRole.Assistant, text));
-            var response = CreateResponse(session, text, privacySafe: true, selectedTool: null, data: null, whoAmI: null, audit.SafeForLiveCrm);
-            _traceStore.Complete(trace.ExecutionId, isBlocked ? ExecutionTraceStatus.Blocked : ExecutionTraceStatus.Success);
-            return response;
+            return CreateResponse(session, text, privacySafe: true, selectedTool: null, data: null, whoAmI: null, audit.SafeForLiveCrm);
         }
 
         // Privacy-safe path: execute tools locally and NEVER send FunctionResultContent back to Groq.
@@ -363,36 +196,14 @@ public sealed partial class ChatService
             call.Name,
             call.Arguments is null ? "(none)" : string.Join(",", call.Arguments.Keys));
 
-        _tracer.SetTool(call.Name, call.Arguments);
-        _tracer.Instant(
-            ExecutionSteps.AiToolSelected,
-            ExecutionStepStatus.Success,
-            summary: $"tool={call.Name}; entity={effectiveEntity ?? "(n/a)"}",
-            details: new
-            {
-                originalTool = originalCall.Name,
-                effectiveTool = call.Name,
-                originalEntity,
-                effectiveEntity,
-                arguments = TraceSanitizer.SanitizeToolArguments(call.Arguments)
-            });
-
         // Backend hard-stop for write/delete intents even if the model incorrectly picks query_crm.
         if (LooksLikeWriteRequest(request.Message))
         {
             var refuse = language == "ar"
                 ? "هذه العملية مرفوضة. المساعد للقراءة فقط ولا ينفّذ إنشاء أو تعديل أو حذف."
                 : "Refused. This assistant is read-only and will not create, update, or delete CRM records.";
-            _tracer.Instant(
-                ExecutionSteps.BackendValidation,
-                ExecutionStepStatus.Blocked,
-                summary: "Write/delete intent blocked before CRM query",
-                details: new { reason = "read_only_policy" });
-            _tracer.Instant(ExecutionSteps.FinalChatResponse, ExecutionStepStatus.Blocked, summary: refuse);
             session.Add(new ChatMessage(ChatRole.Assistant, refuse));
-            var refused = CreateResponse(session, refuse, true, call.Name, null, null, audit.SafeForLiveCrm);
-            _traceStore.Complete(trace.ExecutionId, ExecutionTraceStatus.Blocked);
-            return refused;
+            return CreateResponse(session, refuse, true, call.Name, null, null, audit.SafeForLiveCrm);
         }
 
         // Phase 5.1: Groq is only offered query_crm. Intent helper remaps any legacy names to query_crm.
@@ -405,10 +216,7 @@ public sealed partial class ChatService
             ? "هذه الأداة غير متاحة. استخدم استعلام CRM العام فقط."
             : $"Tool '{call.Name}' is not exposed. Use query_crm only.";
         session.Add(new ChatMessage(ChatRole.Assistant, unsupported));
-        _tracer.Instant(ExecutionSteps.FinalChatResponse, ExecutionStepStatus.Blocked, summary: unsupported);
-        var blocked = CreateResponse(session, unsupported, true, call.Name, null, null, audit.SafeForLiveCrm);
-        _traceStore.Complete(trace.ExecutionId, ExecutionTraceStatus.Blocked);
-        return blocked;
+        return CreateResponse(session, unsupported, true, call.Name, null, null, audit.SafeForLiveCrm);
     }
 
     private static bool LooksLikeWriteRequest(string text)
@@ -420,15 +228,6 @@ public sealed partial class ChatService
 
         return WriteIntentPattern().IsMatch(text);
     }
-
-    private static bool LooksLikeWriteRefusal(string text) =>
-        text.Contains("delete", StringComparison.OrdinalIgnoreCase) ||
-        text.Contains("حذف", StringComparison.OrdinalIgnoreCase) ||
-        text.Contains("create", StringComparison.OrdinalIgnoreCase) ||
-        text.Contains("update", StringComparison.OrdinalIgnoreCase) ||
-        text.Contains("refuse", StringComparison.OrdinalIgnoreCase) ||
-        text.Contains("read-only", StringComparison.OrdinalIgnoreCase) ||
-        text.Contains("read only", StringComparison.OrdinalIgnoreCase);
 
     [System.Text.RegularExpressions.GeneratedRegex(
         @"\b(delete|remove|create|update|insert|upsert|assign|destroy)\b|حذف|إنشاء|تعديل|امسح|امسحي",
@@ -442,102 +241,26 @@ public sealed partial class ChatService
         bool outboundWasSafe,
         CancellationToken cancellationToken)
     {
-        var parseSw = Stopwatch.StartNew();
-        var parseStep = _tracer.Begin(ExecutionSteps.StructuredQueryPlanParsed, "Parsing query_crm arguments");
         var parsed = CrmQueryPlanParser.ParseFromToolArguments(call.Arguments);
-        parseSw.Stop();
-        _tracer.SetMetric("toolParseMs", parseSw.ElapsedMilliseconds);
 
         if (!parsed.Success || parsed.Plan is null)
         {
             var msg = parsed.Error ?? "Invalid query_crm arguments.";
-            if (parseStep is not null)
-            {
-                _tracer.Complete(parseStep.StepId, ExecutionStepStatus.Failed, error: msg);
-            }
-
             session.Add(new ChatMessage(ChatRole.Assistant, msg));
-            _tracer.Instant(ExecutionSteps.FinalChatResponse, ExecutionStepStatus.Failed, summary: msg);
-            CompleteTrace(ExecutionTraceStatus.Failed);
             return CreateResponse(session, msg, true, "query_crm", null, null, outboundWasSafe);
         }
 
-        if (parseStep is not null)
-        {
-            _tracer.Complete(
-                parseStep.StepId,
-                ExecutionStepStatus.Success,
-                summary: $"entity={parsed.Plan.Entity}; op={parsed.Plan.Operation}",
-                details: new
-                {
-                    entity = parsed.Plan.Entity,
-                    operation = parsed.Plan.Operation.ToString(),
-                    filterCount = parsed.Plan.Filters.Count,
-                    sortCount = parsed.Plan.Sort.Count,
-                    limit = parsed.Plan.Limit,
-                    relatedFromEntity = parsed.Plan.RelatedFromEntity,
-                    selectCount = parsed.Plan.Select.Count
-                });
-        }
-
-        var validationSw = Stopwatch.StartNew();
-        var validationStep = _tracer.Begin(ExecutionSteps.BackendValidation, "Entity approval + read-only auth");
         var auth = _auth.AuthorizeRead(parsed.Plan.Entity, "query_crm");
-        validationSw.Stop();
-        _tracer.SetMetric("validationMs", validationSw.ElapsedMilliseconds);
         if (!auth.Allowed)
         {
-            if (validationStep is not null)
-            {
-                _tracer.Complete(validationStep.StepId, ExecutionStepStatus.Blocked, error: auth.Reason);
-            }
-
             session.Add(new ChatMessage(ChatRole.Assistant, auth.Reason));
-            _tracer.Instant(ExecutionSteps.FinalChatResponse, ExecutionStepStatus.Blocked, summary: auth.Reason);
-            CompleteTrace(ExecutionTraceStatus.Blocked);
             return CreateResponse(session, auth.Reason, true, "query_crm", null, null, outboundWasSafe);
         }
 
-        if (validationStep is not null)
+        await _metadata.GetEntityAsync(parsed.Plan.Entity, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(parsed.Plan.RelatedFromEntity))
         {
-            _tracer.Complete(validationStep.StepId, ExecutionStepStatus.Success, summary: "Read authorized");
-        }
-
-        var metaSw = Stopwatch.StartNew();
-        var metaStep = _tracer.Begin(ExecutionSteps.MetadataResolution, "Loading entity metadata for query");
-        try
-        {
-            await _metadata.GetEntityAsync(parsed.Plan.Entity, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(parsed.Plan.RelatedFromEntity))
-            {
-                await _metadata.GetEntityAsync(parsed.Plan.RelatedFromEntity, cancellationToken);
-            }
-        }
-        catch (Exception ex)
-        {
-            metaSw.Stop();
-            if (metaStep is not null)
-            {
-                _tracer.Complete(metaStep.StepId, ExecutionStepStatus.Failed, error: ex.Message);
-            }
-
-            throw;
-        }
-
-        metaSw.Stop();
-        _tracer.SetMetric("metadataMs", metaSw.ElapsedMilliseconds);
-        if (metaStep is not null)
-        {
-            _tracer.Complete(
-                metaStep.StepId,
-                ExecutionStepStatus.Success,
-                summary: $"metadata ready for {parsed.Plan.Entity}",
-                details: new
-                {
-                    entity = parsed.Plan.Entity,
-                    relatedFromEntity = parsed.Plan.RelatedFromEntity,
-                    durationMs = metaSw.ElapsedMilliseconds
-                });
+            await _metadata.GetEntityAsync(parsed.Plan.RelatedFromEntity, cancellationToken);
         }
 
         Guid? whoAmIUserId = null;
@@ -550,8 +273,6 @@ public sealed partial class ChatService
                     ? "تعذر التحقق من هوية Windows/CRM قبل تنفيذ الاستعلام."
                     : $"CRM identity verification failed before query_crm: {who.Message}";
                 session.Add(new ChatMessage(ChatRole.Assistant, fail));
-                _tracer.Instant(ExecutionSteps.FinalChatResponse, ExecutionStepStatus.Failed, error: fail);
-                CompleteTrace(ExecutionTraceStatus.Failed);
                 return CreateResponse(session, fail, true, "query_crm", null, null, outboundWasSafe);
             }
 
@@ -570,8 +291,6 @@ public sealed partial class ChatService
                 ? "فشل تنفيذ استعلام CRM العام."
                 : "Failed to execute the generic CRM query.";
             session.Add(new ChatMessage(ChatRole.Assistant, fail));
-            _tracer.Instant(ExecutionSteps.FinalChatResponse, ExecutionStepStatus.Failed, error: ex.Message);
-            CompleteTrace(ExecutionTraceStatus.Failed);
             return CreateResponse(session, fail, true, "query_crm", null, whoAmIUserId, outboundWasSafe);
         }
 
@@ -580,39 +299,11 @@ public sealed partial class ChatService
             result.Items.Count == 0 &&
             result.Count is null)
         {
-            var blockedStatus = result.Message.Contains("not an approved", StringComparison.OrdinalIgnoreCase) ||
-                                result.Message.Contains("denied", StringComparison.OrdinalIgnoreCase) ||
-                                result.Message.Contains("Only read", StringComparison.OrdinalIgnoreCase)
-                ? ExecutionTraceStatus.Blocked
-                : ExecutionTraceStatus.Failed;
             session.Add(new ChatMessage(ChatRole.Assistant, result.Message));
-            _tracer.Instant(
-                ExecutionSteps.FinalChatResponse,
-                blockedStatus == ExecutionTraceStatus.Blocked ? ExecutionStepStatus.Blocked : ExecutionStepStatus.Failed,
-                summary: result.Message);
-            CompleteTrace(blockedStatus);
             return CreateResponse(session, result.Message, true, "query_crm", null, whoAmIUserId, outboundWasSafe);
         }
 
-        var formatSw = Stopwatch.StartNew();
-        var formatStep = _tracer.Begin(ExecutionSteps.LocalResponseFormatting, "Formatting reply locally (no CRM rows to AI)");
         var reply = GenericCrmReplyFormatter.Format(result, language, whoAmIUserId);
-        formatSw.Stop();
-        _tracer.SetMetric("formatMs", formatSw.ElapsedMilliseconds);
-        if (formatStep is not null)
-        {
-            _tracer.Complete(
-                formatStep.StepId,
-                ExecutionStepStatus.Success,
-                summary: $"rows={result.Items.Count}; count={result.Count?.ToString() ?? "n/a"}",
-                details: new
-                {
-                    rowCount = result.Items.Count,
-                    result.Count,
-                    result.CountMayBeCapped,
-                    durationMs = formatSw.ElapsedMilliseconds
-                });
-        }
 
         session.Add(new ChatMessage(ChatRole.Assistant, reply));
 
@@ -621,22 +312,6 @@ public sealed partial class ChatService
             result.Entity,
             result.Operation,
             result.Items.Count);
-
-        _tracer.SetPrivacy(privacySafe: true, outboundContainedCrm: !outboundWasSafe);
-        _tracer.Instant(
-            ExecutionSteps.FinalChatResponse,
-            ExecutionStepStatus.Success,
-            summary: "Chat response ready; CRM records not sent to Groq",
-            details: new
-            {
-                selectedTool = "query_crm",
-                entity = result.Entity,
-                operation = result.Operation.ToString(),
-                rows = result.Items.Count,
-                count = result.Count,
-                privacySafe = true
-            });
-        CompleteTrace(ExecutionTraceStatus.Success);
 
         return CreateResponse(
             session,
@@ -664,14 +339,6 @@ public sealed partial class ChatService
             whoAmI: whoAmIUserId,
             outboundWasSafe: outboundWasSafe,
             crmProvider: result.ProviderName);
-    }
-
-    private void CompleteTrace(ExecutionTraceStatus status)
-    {
-        if (_tracer.Current is not null)
-        {
-            _traceStore.Complete(_tracer.Current.ExecutionId, status);
-        }
     }
 
     private List<AITool> CreateToolDeclarations() =>
@@ -771,8 +438,7 @@ public sealed partial class ChatService
             StructuredData = data,
             CrmWhoAmIUserId = whoAmI,
             OutboundAiContainedCrmRecords = !outboundWasSafe,
-            CrmDataProvider = crmProvider,
-            ExecutionId = _tracer.Current?.ExecutionId
+            CrmDataProvider = crmProvider
         };
 
     private string ResolveProviderHint()
@@ -792,34 +458,6 @@ public sealed partial class ChatService
     }
 
     private string ResolveAiProviderName() => (_aiOptions.Provider ?? "Groq").Trim();
-
-    private string ResolveAiModelName()
-    {
-        var provider = ResolveAiProviderName();
-        if (provider.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
-        {
-            return _openAiOptions.ModelName;
-        }
-
-        if (provider.Equals("Gemini", StringComparison.OrdinalIgnoreCase))
-        {
-            return _geminiOptions.ModelName;
-        }
-
-        return _groqOptions.ModelName;
-    }
-
-    private static object? SafeParseJson(string json)
-    {
-        try
-        {
-            return JsonSerializer.Deserialize<JsonElement>(json);
-        }
-        catch
-        {
-            return null;
-        }
-    }
 
     private static string DetectLanguageHint(string message)
     {

@@ -16,7 +16,4 @@ public sealed class ChatResponseDto
     public Guid? CrmWhoAmIUserId { get; init; }
     public bool OutboundAiContainedCrmRecords { get; init; }
     public string? CrmDataProvider { get; init; }
-
-    /// <summary>Correlation id for the Execution Inspector (Development only).</summary>
-    public string? ExecutionId { get; init; }
 }

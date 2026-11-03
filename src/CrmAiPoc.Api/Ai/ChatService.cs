@@ -18,21 +18,6 @@ public sealed partial class ChatService
         Always call query_crm for CRM reads (list, count, filters, sort, dates, pagination, one-hop relationships).
         Do not invent CRM records. Never emit OData, SQL, FetchXML, or URLs.
 
-        Approved entities (config-driven): account, contact, salesorder, lead (and any others enabled by backend policy).
-        CRITICAL: Choose entity from the LATEST user message only. Do not reuse entity from earlier turns.
-
-        query_crm examples:
-        - latest 5 sales orders → entity=salesorder, operation=list, sortField=createdon, sortDirection=desc, limit=5
-        - latest 5 accounts → entity=account, operation=list, sortField=createdon, sortDirection=desc, limit=5
-        - latest 5 contacts → entity=contact, operation=list, sortField=createdon, sortDirection=desc, limit=5
-        - latest leads → entity=lead, operation=list, sortField=createdon, sortDirection=desc, limit=5
-        - count active sales orders → entity=salesorder, operation=count, filtersJson=[{"field":"statecode","operator":"eq","value":"Active"}]
-        - عدد أوامر البيع → entity=salesorder, operation=count
-        - contacts created before March 2026 → entity=contact, filtersJson with createdon lt 2026-03-01
-        - accounts created after January 2026 → entity=account, filtersJson with createdon gt 2026-01-31 (or ge 2026-02-01)
-        - highest-value sales orders → entity=salesorder, sortField=totalamount, sortDirection=desc, limit=5
-        - contacts for an account GUID → entity=contact, relatedFromEntity=account, relatedFromId={guid}
-
         Relative dates: relativeDateField=createdon|modifiedon with relativeDateToken=
         last_calendar_month | this_calendar_month | this_week | last_7_days | last_30_days
 

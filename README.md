@@ -30,13 +30,13 @@ Phase 4 dynamic salesorder queries: see `docs/PHASE4-DYNAMIC-SALESORDER-QUERIES.
 
 ```
 CrmAiPoc.slnx
-src/CrmAiPoc.Api/
-  Ai/                 ChatService, CrmAiTools, LazyGemini / LazyOpenAi / LazyGroq clients
-  Crm/                ICrmDataProvider, Mock + Dynamics adapters, validation
-  Security/           Allowlist + server-side authorization
-  Endpoints/          POST /api/chat
-  wwwroot/            Minimal chat UI
-tests/CrmAiPoc.Tests/ Validation, auth, tool execution tests
+src/CrmAiPoc.Api/              ASP.NET Core API only (no UI)
+  Ai/                          ChatService, CrmAiTools, provider clients
+  Crm/                         ICrmDataProvider, Mock + Dynamics adapters
+  Security/                    Allowlist + server-side authorization
+  Endpoints/                   POST /api/chat
+frontend/crm-ai-assistant-ui/  Angular chat UI (local + CRM web resources)
+tests/CrmAiPoc.Tests/          Validation, auth, tool execution tests
 ```
 
 ## Prerequisites
@@ -81,6 +81,8 @@ dotnet user-secrets set "OpenAI:ApiKey" "<openai-key>"
 
 ## Run
 
+**API**
+
 ```bash
 dotnet restore
 dotnet build
@@ -88,9 +90,19 @@ dotnet test
 dotnet run --project src/CrmAiPoc.Api
 ```
 
-- Chat UI: `http://localhost:<port>/`
-- Swagger: `http://localhost:<port>/swagger`
+- API: `http://localhost:5138`
+- Swagger: `http://localhost:5138/swagger`
 - Health: `GET /api/health`
+
+**Angular UI** (separate app)
+
+```bash
+cd frontend/crm-ai-assistant-ui
+npm install
+npm start
+```
+
+- UI: `http://localhost:4200` (proxies `/api` → `:5138`)
 
 ### Example request
 

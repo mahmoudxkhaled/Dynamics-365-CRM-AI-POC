@@ -16,9 +16,20 @@
     </button>
   </form>
   <div class="hints">
-    Try: <code>Show me the latest 5 accounts</code> ·
-    <code>هاتلي آخر 5 Sales Orders</code> ·
-    <code>Delete all accounts</code>
-    <code>Highest-value sales orders</code>
+    Try:
+    @for (sample of samples; track sample; let last = $last) {
+      <button
+        type="button"
+        class="hint-sample"
+        [class.copied]="copiedSample === sample"
+        [title]="copiedSample === sample ? 'Copied!' : 'Click to copy'"
+        (click)="useSample(sample, $event)"
+      >
+        {{ sample }}
+      </button>
+      @if (!last) {
+        <span aria-hidden="true"> · </span>
+      }
+    }
   </div>
 </div>

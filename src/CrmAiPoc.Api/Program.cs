@@ -208,8 +208,6 @@ if (app.Environment.IsDevelopment())
 
 app.UseCors();
 app.UseMiddleware<LoopbackOnlyMiddleware>();
-app.UseDefaultFiles();
-app.UseStaticFiles();
 
 app.MapChatEndpoints();
 app.MapCrmDiagnosticsEndpoints();

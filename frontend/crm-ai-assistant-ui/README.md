@@ -60,12 +60,10 @@ CORS: the API already allows any origin for the PoC. Prefer proxy / same-origin 
 
 ```text
 src/app/
-  core/          models, ChatService, ApiConfigService, ThemeService, table utils
+  core/          models, ChatService, ApiConfigService, CrmContextService, table utils
   shared/        SharedModule
   features/chat/ ChatWindow, ChatMessage, ChatInput, CrmResultsTable
   app.module.ts  NgModule bootstrap (not standalone)
 ```
 
-## Reference UI
-
-The original static UI remains at `src/CrmAiPoc.Api/wwwroot/index.html` until this app is verified in your environment. Safe to retire after acceptance.
+The ASP.NET API no longer serves a UI — use this Angular app (`npm start`) or CRM web resources (`npm run build:crm`). See [CRM-DEPLOY.md](./CRM-DEPLOY.md).

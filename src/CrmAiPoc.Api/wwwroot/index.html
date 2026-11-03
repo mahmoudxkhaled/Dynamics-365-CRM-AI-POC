@@ -694,11 +694,7 @@
     }
     function extractRows(structured) {
       if (!structured || typeof structured !== "object") return [];
-      if (Array.isArray(structured.records)) return structured.records;
-      if (Array.isArray(structured.salesOrders)) return structured.salesOrders;
-      if (Array.isArray(structured.accounts)) return structured.accounts;
-      if (Array.isArray(structured.contacts)) return structured.contacts;
-      return [];
+      return Array.isArray(structured.records) ? structured.records : [];
     }
     function normalizeMetadataColumns(structured) {
       if (!structured || !Array.isArray(structured.columns) || structured.columns.length === 0) return null;

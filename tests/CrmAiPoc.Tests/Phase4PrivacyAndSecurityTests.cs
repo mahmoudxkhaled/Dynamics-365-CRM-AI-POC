@@ -40,10 +40,6 @@ public class Phase4PrivacyAndSecurityTests
     [Fact]
     public void OutboundHistory_NeverIncludesCrmRows_OnlyCatalogAndLatestUser()
     {
-        var session = new ConversationSession("test");
-        session.Add(new ChatMessage(ChatRole.User, "earlier accounts question"));
-        session.Add(new ChatMessage(ChatRole.Assistant, "ORD-1001 should not be resent"));
-
         var catalog = new CrmAiMetadataCatalogBuildResult
         {
             Enabled = true,
@@ -54,11 +50,11 @@ public class Phase4PrivacyAndSecurityTests
             CharacterCount = 40
         };
 
-        var outbound = ChatService.BuildOutboundHistory(session, "how many leads?", catalog);
+        var outbound = ChatService.BuildOutboundHistory("how many leads?", catalog);
         Assert.Equal(3, outbound.Count);
-        Assert.All(outbound, m => Assert.DoesNotContain("ORD-1001", m.Text ?? string.Empty, StringComparison.Ordinal));
         Assert.Contains(outbound, m => m.Role == ChatRole.System && (m.Text ?? string.Empty).Contains(CrmAiMetadataCatalogService.BeginMarker, StringComparison.Ordinal));
         Assert.Equal("how many leads?", outbound[^1].Text);
+        Assert.DoesNotContain(outbound, m => m.Role == ChatRole.Assistant);
 
         var audit = OutboundAiPayloadAuditor.Audit(outbound);
         Assert.True(audit.SafeForLiveCrm);

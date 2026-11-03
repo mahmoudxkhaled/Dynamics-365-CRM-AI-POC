@@ -4,7 +4,6 @@ using CrmAiPoc.Api.Crm.Dynamics;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
 using CrmAiPoc.Api.Models;
-using CrmAiPoc.Api.Security;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 
@@ -46,9 +45,7 @@ public sealed partial class ChatService
     private readonly CrmAiTools _tools;
     private readonly ConversationStore _conversations;
     private readonly DynamicsConnectivityService _connectivity;
-    private readonly ICrmAuthorizationService _auth;
     private readonly IGenericCrmRepository _genericCrm;
-    private readonly ICrmMetadataService _metadata;
     private readonly ICrmAiMetadataCatalogService _metadataCatalog;
     private readonly CrmOptions _crmOptions;
     private readonly AiOptions _aiOptions;
@@ -59,9 +56,7 @@ public sealed partial class ChatService
         CrmAiTools tools,
         ConversationStore conversations,
         DynamicsConnectivityService connectivity,
-        ICrmAuthorizationService auth,
         IGenericCrmRepository genericCrm,
-        ICrmMetadataService metadata,
         ICrmAiMetadataCatalogService metadataCatalog,
         IOptions<CrmOptions> crmOptions,
         IOptions<AiOptions> aiOptions,
@@ -71,9 +66,7 @@ public sealed partial class ChatService
         _tools = tools;
         _conversations = conversations;
         _connectivity = connectivity;
-        _auth = auth;
         _genericCrm = genericCrm;
-        _metadata = metadata;
         _metadataCatalog = metadataCatalog;
         _crmOptions = crmOptions.Value;
         _aiOptions = aiOptions.Value;
@@ -82,13 +75,8 @@ public sealed partial class ChatService
 
     public async Task<ChatResponseDto> ChatAsync(ChatRequestDto request, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(request.Message))
-        {
-            throw new ArgumentException("Message is required.", nameof(request));
-        }
-
         var session = _conversations.GetOrCreate(request.ConversationId);
-        _tools.Session = session;
+        session.Touch();
         var language = DetectLanguageHint(request.Message);
         return await ChatCoreAsync(request, session, language, cancellationToken);
     }
@@ -106,51 +94,32 @@ public sealed partial class ChatService
             language);
 
         var catalog = await _metadataCatalog.BuildApprovedCatalogAsync(cancellationToken);
-
-        var outboundHistory = BuildOutboundHistory(session, request.Message.Trim(), catalog);
+        var outboundHistory = BuildOutboundHistory(request.Message.Trim(), catalog);
         var audit = OutboundAiPayloadAuditor.Audit(outboundHistory);
-        _logger.LogInformation(
-            "Outbound AI payload audit: messages={Count}, roles={Roles}, contentTypes={Types}, containsFunctionResults={HasResults}, suspiciousCrmText={Suspicious}, safe={Safe}",
-            audit.MessageCount,
-            audit.Roles,
-            audit.ContentTypes,
-            audit.ContainsFunctionResults,
-            audit.SuspiciousCrmRecordText,
-            audit.SafeForLiveCrm);
-
         if (!audit.SafeForLiveCrm)
         {
             throw new InvalidOperationException(
                 "Refusing to call the AI provider because the outbound payload appears to contain CRM tool results or record text.");
         }
 
-        var tools = CreateToolDeclarations();
         var chatOptions = new ChatOptions
         {
-            Tools = tools,
+            Tools = [AIFunctionFactory.Create(_tools.query_crm)],
             Temperature = 0.1f
         };
 
         var modelResponse = await GetResponseWithRetryAsync(outboundHistory, chatOptions, cancellationToken);
-
         var functionCalls = modelResponse.Messages
             .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
             .ToList();
-
-        session.Add(new ChatMessage(ChatRole.User, request.Message.Trim()));
 
         if (functionCalls.Count == 0)
         {
             if (LooksLikeWriteRequest(request.Message))
             {
-                var refuse = language == "ar"
-                    ? "هذه العملية مرفوضة. المساعد للقراءة فقط ولا ينفّذ إنشاء أو تعديل أو حذف."
-                    : "Refused. This assistant is read-only and will not create, update, or delete CRM records.";
-                session.Add(new ChatMessage(ChatRole.Assistant, refuse));
-                return CreateResponse(session, refuse, true, selectedTool: null, data: null, whoAmI: null, outboundWasSafe: audit.SafeForLiveCrm);
+                return CreateResponse(session, RefuseWrite(language), outboundWasSafe: audit.SafeForLiveCrm);
             }
 
-            // Model sometimes replies in text for Arabic count questions instead of calling a tool.
             var fallbackEntity = CrmQueryIntentHelper.DetectEntityLogicalName(request.Message);
             if (fallbackEntity is not null)
             {
@@ -163,78 +132,38 @@ public sealed partial class ChatService
                 var synthetic = CrmQueryIntentHelper.CorrectToolCall(
                     request.Message.Trim(),
                     new FunctionCallContent("local-entity-fallback", "query_crm", args));
-                _logger.LogInformation(
-                    "No tool selected by model; applying entity intent fallback for {Entity}.",
-                    fallbackEntity);
-                return await HandleQueryCrmPrivacySafeAsync(
-                    session, synthetic, language, audit.SafeForLiveCrm, cancellationToken);
+                _logger.LogInformation("No tool selected; entity intent fallback → {Entity}", fallbackEntity);
+                return await HandleQueryCrmAsync(session, synthetic, language, audit.SafeForLiveCrm, cancellationToken);
             }
 
             var text = LocalCrmReplyFormatter.FormatRefusalOrText(modelResponse.Text, language);
-            session.Add(new ChatMessage(ChatRole.Assistant, text));
-            return CreateResponse(session, text, privacySafe: true, selectedTool: null, data: null, whoAmI: null, audit.SafeForLiveCrm);
+            return CreateResponse(session, text, outboundWasSafe: audit.SafeForLiveCrm);
         }
 
-        // Privacy-safe path: execute tools locally and NEVER send FunctionResultContent back to Groq.
         var originalCall = functionCalls[0];
         var call = CrmQueryIntentHelper.CorrectToolCall(request.Message.Trim(), originalCall);
-        var originalEntity = GetArgValue(originalCall.Arguments, "entity");
-        var effectiveEntity = GetArgValue(call.Arguments, "entity");
-        if (!string.Equals(call.Name, originalCall.Name, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(originalEntity, effectiveEntity, StringComparison.OrdinalIgnoreCase))
-        {
-            _logger.LogInformation(
-                "Tool routing after entity intent check: original={Original}/{OrigEntity}, effective={Effective}/{EffEntity}",
-                originalCall.Name,
-                originalEntity,
-                call.Name,
-                effectiveEntity);
-        }
-
         _logger.LogInformation(
-            "Selected AI function: {FunctionName} | Parsed arguments keys={Keys}",
+            "Selected AI function: {FunctionName} | entity={Entity}",
             call.Name,
-            call.Arguments is null ? "(none)" : string.Join(",", call.Arguments.Keys));
+            GetArgValue(call.Arguments, "entity"));
 
-        // Backend hard-stop for write/delete intents even if the model incorrectly picks query_crm.
         if (LooksLikeWriteRequest(request.Message))
         {
-            var refuse = language == "ar"
-                ? "هذه العملية مرفوضة. المساعد للقراءة فقط ولا ينفّذ إنشاء أو تعديل أو حذف."
-                : "Refused. This assistant is read-only and will not create, update, or delete CRM records.";
-            session.Add(new ChatMessage(ChatRole.Assistant, refuse));
-            return CreateResponse(session, refuse, true, call.Name, null, null, audit.SafeForLiveCrm);
+            return CreateResponse(session, RefuseWrite(language), selectedTool: call.Name, outboundWasSafe: audit.SafeForLiveCrm);
         }
 
-        // Phase 5.1: Groq is only offered query_crm. Intent helper remaps any legacy names to query_crm.
         if (string.Equals(call.Name, "query_crm", StringComparison.OrdinalIgnoreCase))
         {
-            return await HandleQueryCrmPrivacySafeAsync(session, call, language, audit.SafeForLiveCrm, cancellationToken);
+            return await HandleQueryCrmAsync(session, call, language, audit.SafeForLiveCrm, cancellationToken);
         }
 
         var unsupported = language == "ar"
             ? "هذه الأداة غير متاحة. استخدم استعلام CRM العام فقط."
             : $"Tool '{call.Name}' is not exposed. Use query_crm only.";
-        session.Add(new ChatMessage(ChatRole.Assistant, unsupported));
-        return CreateResponse(session, unsupported, true, call.Name, null, null, audit.SafeForLiveCrm);
+        return CreateResponse(session, unsupported, selectedTool: call.Name, outboundWasSafe: audit.SafeForLiveCrm);
     }
 
-    private static bool LooksLikeWriteRequest(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return false;
-        }
-
-        return WriteIntentPattern().IsMatch(text);
-    }
-
-    [System.Text.RegularExpressions.GeneratedRegex(
-        @"\b(delete|remove|create|update|insert|upsert|assign|destroy)\b|حذف|إنشاء|تعديل|امسح|امسحي",
-        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
-    private static partial System.Text.RegularExpressions.Regex WriteIntentPattern();
-
-    private async Task<ChatResponseDto> HandleQueryCrmPrivacySafeAsync(
+    private async Task<ChatResponseDto> HandleQueryCrmAsync(
         ConversationSession session,
         FunctionCallContent call,
         string language,
@@ -242,25 +171,10 @@ public sealed partial class ChatService
         CancellationToken cancellationToken)
     {
         var parsed = CrmQueryPlanParser.ParseFromToolArguments(call.Arguments);
-
         if (!parsed.Success || parsed.Plan is null)
         {
             var msg = parsed.Error ?? "Invalid query_crm arguments.";
-            session.Add(new ChatMessage(ChatRole.Assistant, msg));
-            return CreateResponse(session, msg, true, "query_crm", null, null, outboundWasSafe);
-        }
-
-        var auth = _auth.AuthorizeRead(parsed.Plan.Entity, "query_crm");
-        if (!auth.Allowed)
-        {
-            session.Add(new ChatMessage(ChatRole.Assistant, auth.Reason));
-            return CreateResponse(session, auth.Reason, true, "query_crm", null, null, outboundWasSafe);
-        }
-
-        await _metadata.GetEntityAsync(parsed.Plan.Entity, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(parsed.Plan.RelatedFromEntity))
-        {
-            await _metadata.GetEntityAsync(parsed.Plan.RelatedFromEntity, cancellationToken);
+            return CreateResponse(session, msg, selectedTool: "query_crm", outboundWasSafe: outboundWasSafe);
         }
 
         Guid? whoAmIUserId = null;
@@ -272,8 +186,7 @@ public sealed partial class ChatService
                 var fail = language == "ar"
                     ? "تعذر التحقق من هوية Windows/CRM قبل تنفيذ الاستعلام."
                     : $"CRM identity verification failed before query_crm: {who.Message}";
-                session.Add(new ChatMessage(ChatRole.Assistant, fail));
-                return CreateResponse(session, fail, true, "query_crm", null, null, outboundWasSafe);
+                return CreateResponse(session, fail, selectedTool: "query_crm", outboundWasSafe: outboundWasSafe);
             }
 
             whoAmIUserId = who.UserId;
@@ -290,8 +203,7 @@ public sealed partial class ChatService
             var fail = language == "ar"
                 ? "فشل تنفيذ استعلام CRM العام."
                 : "Failed to execute the generic CRM query.";
-            session.Add(new ChatMessage(ChatRole.Assistant, fail));
-            return CreateResponse(session, fail, true, "query_crm", null, whoAmIUserId, outboundWasSafe);
+            return CreateResponse(session, fail, selectedTool: "query_crm", whoAmI: whoAmIUserId, outboundWasSafe: outboundWasSafe);
         }
 
         if (!string.IsNullOrWhiteSpace(result.Message) &&
@@ -299,16 +211,12 @@ public sealed partial class ChatService
             result.Items.Count == 0 &&
             result.Count is null)
         {
-            session.Add(new ChatMessage(ChatRole.Assistant, result.Message));
-            return CreateResponse(session, result.Message, true, "query_crm", null, whoAmIUserId, outboundWasSafe);
+            return CreateResponse(session, result.Message, selectedTool: "query_crm", whoAmI: whoAmIUserId, outboundWasSafe: outboundWasSafe);
         }
 
         var reply = GenericCrmReplyFormatter.Format(result, language, whoAmIUserId);
-
-        session.Add(new ChatMessage(ChatRole.Assistant, reply));
-
         _logger.LogInformation(
-            "Privacy-safe query_crm complete: entity={Entity}, operation={Operation}, rows={Rows}, sentToAi=false",
+            "query_crm complete: entity={Entity}, operation={Operation}, rows={Rows}",
             result.Entity,
             result.Operation,
             result.Items.Count);
@@ -316,7 +224,6 @@ public sealed partial class ChatService
         return CreateResponse(
             session,
             reply,
-            privacySafe: true,
             selectedTool: "query_crm",
             data: new
             {
@@ -341,18 +248,10 @@ public sealed partial class ChatService
             crmProvider: result.ProviderName);
     }
 
-    private List<AITool> CreateToolDeclarations() =>
-    [
-        AIFunctionFactory.Create(_tools.query_crm)
-    ];
-
     internal static List<ChatMessage> BuildOutboundHistory(
-        ConversationSession session,
         string newUserMessage,
         CrmAiMetadataCatalogBuildResult? catalog = null)
     {
-        // System + optional schema catalog + latest user message only (no CRM rows / prior turns).
-        _ = session;
         var messages = new List<ChatMessage>
         {
             new(ChatRole.System, SystemPrompt)
@@ -366,16 +265,6 @@ public sealed partial class ChatService
 
         messages.Add(new ChatMessage(ChatRole.User, newUserMessage));
         return messages;
-    }
-
-    private static string? GetArgValue(IDictionary<string, object?>? arguments, string key)
-    {
-        if (arguments is null || !arguments.TryGetValue(key, out var raw) || raw is null)
-        {
-            return null;
-        }
-
-        return Convert.ToString(raw, CultureInfo.InvariantCulture);
     }
 
     private async Task<ChatResponse> GetResponseWithRetryAsync(
@@ -417,23 +306,43 @@ public sealed partial class ChatService
                || message.Contains("503", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool LooksLikeWriteRequest(string text) =>
+        !string.IsNullOrWhiteSpace(text) && WriteIntentPattern().IsMatch(text);
+
+    private static string RefuseWrite(string language) =>
+        language == "ar"
+            ? "هذه العملية مرفوضة. المساعد للقراءة فقط ولا ينفّذ إنشاء أو تعديل أو حذف."
+            : "Refused. This assistant is read-only and will not create, update, or delete CRM records.";
+
+    [System.Text.RegularExpressions.GeneratedRegex(
+        @"\b(delete|remove|create|update|insert|upsert|assign|destroy)\b|حذف|إنشاء|تعديل|امسح|امسحي",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex WriteIntentPattern();
+
+    private static string? GetArgValue(IDictionary<string, object?>? arguments, string key)
+    {
+        if (arguments is null || !arguments.TryGetValue(key, out var raw) || raw is null)
+        {
+            return null;
+        }
+
+        return Convert.ToString(raw, CultureInfo.InvariantCulture);
+    }
+
     private ChatResponseDto CreateResponse(
         ConversationSession session,
         string reply,
-        bool privacySafe,
-        string? selectedTool,
-        object? data,
-        Guid? whoAmI,
         bool outboundWasSafe,
+        string? selectedTool = null,
+        object? data = null,
+        Guid? whoAmI = null,
         string? crmProvider = null) =>
         new()
         {
             ConversationId = session.ConversationId,
             Reply = reply,
             ProviderHint = ResolveProviderHint(),
-            LastReferencedAccountId = session.LastReferencedAccountId,
-            LastReferencedAccountName = session.LastReferencedAccountName,
-            PrivacySafeToolExecution = privacySafe,
+            PrivacySafeToolExecution = true,
             SelectedTool = selectedTool,
             StructuredData = data,
             CrmWhoAmIUserId = whoAmI,
@@ -443,7 +352,7 @@ public sealed partial class ChatService
 
     private string ResolveProviderHint()
     {
-        var provider = ResolveAiProviderName();
+        var provider = (_aiOptions.Provider ?? "Groq").Trim();
         if (provider.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
         {
             return "OpenAI (tool selection only; CRM replies local)";
@@ -456,8 +365,6 @@ public sealed partial class ChatService
 
         return "Groq (tool selection only; CRM replies local)";
     }
-
-    private string ResolveAiProviderName() => (_aiOptions.Provider ?? "Groq").Trim();
 
     private static string DetectLanguageHint(string message)
     {

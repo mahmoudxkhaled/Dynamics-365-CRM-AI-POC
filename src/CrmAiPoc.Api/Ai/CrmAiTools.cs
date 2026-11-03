@@ -20,9 +20,6 @@ public sealed class CrmAiTools
     private readonly IGenericCrmRepository _genericCrm;
     private readonly ILogger<CrmAiTools> _logger;
 
-    /// <summary>Optional conversation session (set by ChatService when needed).</summary>
-    public ConversationSession? Session { get; set; }
-
     public CrmAiTools(
         IGenericCrmRepository genericCrm,
         ILogger<CrmAiTools> logger)

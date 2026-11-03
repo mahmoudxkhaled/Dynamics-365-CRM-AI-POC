@@ -33,17 +33,25 @@ public class Phase51UnifiedQueryCrmTests
     }
 
     [Theory]
-    [InlineData("Show me the latest 5 sales orders", "salesorder", "get_sales_orders")]
-    [InlineData("Show me the latest 5 accounts", "account", "search_accounts")]
-    [InlineData("Show me the latest 5 contacts", "contact", "get_contacts_for_account")]
-    [InlineData("Count active sales orders", "salesorder", "query_sales_orders")]
-    [InlineData("Show me the latest 5 leads", "lead", "query_crm")]
-    public void Intent_Remaps_Legacy_Tools_To_QueryCrm(string message, string entity, string legacyTool)
+    [InlineData("Show me the latest 5 sales orders", "account", "salesorder")]
+    [InlineData("Show me the latest 5 accounts", "salesorder", "account")]
+    [InlineData("Show me the latest 5 contacts", "account", "contact")]
+    [InlineData("Count active sales orders", "lead", "salesorder")]
+    [InlineData("Show me the latest 5 leads", "contact", "lead")]
+    public void Intent_Corrects_Sticky_Entity_On_QueryCrm(string message, string wrongEntity, string expectedEntity)
     {
-        var call = new FunctionCallContent("1", legacyTool, new Dictionary<string, object?> { ["limit"] = 5 });
+        var call = new FunctionCallContent(
+            "1",
+            "query_crm",
+            new Dictionary<string, object?>
+            {
+                ["entity"] = wrongEntity,
+                ["operation"] = "list",
+                ["limit"] = 5
+            });
         var corrected = CrmQueryIntentHelper.CorrectToolCall(message, call);
         Assert.Equal("query_crm", corrected.Name);
-        Assert.Equal(entity, corrected.Arguments!["entity"]?.ToString());
+        Assert.Equal(expectedEntity, corrected.Arguments!["entity"]?.ToString());
     }
 
     [Fact]

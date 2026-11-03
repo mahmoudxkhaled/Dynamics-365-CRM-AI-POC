@@ -141,8 +141,7 @@ public class CrmAiMetadataCatalogTests
     {
         var (_, _, _, catalog) = CreateStack(allowCatalog: true);
         var built = await catalog.BuildApprovedCatalogAsync();
-        var session = new ConversationSession("test");
-        var history = ChatService.BuildOutboundHistory(session, "Show me the latest 5 sales orders", built);
+        var history = ChatService.BuildOutboundHistory("Show me the latest 5 sales orders", built);
 
         Assert.Equal(3, history.Count);
         Assert.Equal(ChatRole.System, history[0].Role);
@@ -160,7 +159,7 @@ public class CrmAiMetadataCatalogTests
     {
         var (_, _, _, catalog) = CreateStack(allowCatalog: false);
         var built = await catalog.BuildApprovedCatalogAsync();
-        var history = ChatService.BuildOutboundHistory(new ConversationSession("t"), "hi", built);
+        var history = ChatService.BuildOutboundHistory("hi", built);
         Assert.Equal(2, history.Count);
         Assert.DoesNotContain(history, m => OutboundAiPayloadAuditor.IsApprovedMetadataCatalogBlock(m.Text));
     }

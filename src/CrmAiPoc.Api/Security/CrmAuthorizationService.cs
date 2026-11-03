@@ -1,6 +1,5 @@
 using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Metadata;
-using CrmAiPoc.Api.Crm.Models;
 using Microsoft.Extensions.Options;
 
 namespace CrmAiPoc.Api.Security;
@@ -11,10 +10,6 @@ namespace CrmAiPoc.Api.Security;
 /// </summary>
 public sealed class CrmAuthorizationService : ICrmAuthorizationService
 {
-    // Fixed denied account for "confidential / no access" demonstration.
-    public static readonly Guid DeniedConfidentialAccountId =
-        Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
-
     private readonly CrmUserContext _user;
     private readonly EntityApprovalPolicy? _approvalPolicy;
     private readonly ILogger<CrmAuthorizationService> _logger;
@@ -30,9 +25,7 @@ public sealed class CrmAuthorizationService : ICrmAuthorizationService
         _user = new CrmUserContext
         {
             UserId = crm.MockUserId,
-            DisplayName = crm.MockUserDisplayName,
-            DenyConfidentialRecords = true,
-            DeniedAccountIds = [DeniedConfidentialAccountId]
+            DisplayName = crm.MockUserDisplayName
         };
     }
 
@@ -65,25 +58,6 @@ public sealed class CrmAuthorizationService : ICrmAuthorizationService
         var allow = AuthorizationDecision.Allow(operation, entityLogicalName);
         LogDecision(allow);
         return allow;
-    }
-
-    public AuthorizationDecision AuthorizeAccountAccess(CrmAccount account, string operation) =>
-        AuthorizeAccountId(account.AccountId, account.IsConfidential, operation);
-
-    public AuthorizationDecision AuthorizeAccountId(Guid accountId, bool isConfidential, string operation)
-    {
-        if (_user.DeniedAccountIds.Contains(accountId) ||
-            (isConfidential && _user.DenyConfidentialRecords))
-        {
-            var deny = AuthorizationDecision.Deny(
-                "Access denied: you do not have permission to read this confidential CRM record.",
-                operation,
-                CrmEntityAllowlist.Account);
-            LogDecision(deny);
-            return deny;
-        }
-
-        return AuthorizeRead(CrmEntityAllowlist.Account, operation);
     }
 
     private static bool IsReadOperation(string operation) =>

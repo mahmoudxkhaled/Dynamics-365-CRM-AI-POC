@@ -1,5 +1,4 @@
 using CrmAiPoc.Api.Crm.Models;
-using CrmAiPoc.Api.Security;
 
 namespace CrmAiPoc.Api.Crm.Mock;
 
@@ -10,6 +9,7 @@ public static class MockCrmSeedData
     public static readonly Guid NileRetailId = Guid.Parse("33333333-3333-3333-3333-333333333333");
     public static readonly Guid CairoLogisticsId = Guid.Parse("44444444-4444-4444-4444-444444444444");
     public static readonly Guid DeltaServicesId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+    public static readonly Guid ConfidentialPartnerId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
 
     public static IReadOnlyList<CrmAccount> CreateAccounts() =>
     [
@@ -75,7 +75,7 @@ public static class MockCrmSeedData
         },
         new CrmAccount
         {
-            AccountId = CrmAuthorizationService.DeniedConfidentialAccountId,
+            AccountId = ConfidentialPartnerId,
             Name = "Confidential Strategic Partner",
             AccountNumber = "ACC-9999",
             Telephone1 = "+20-2-555-9999",
@@ -155,7 +155,7 @@ public static class MockCrmSeedData
         new CrmContact
         {
             ContactId = Guid.Parse("afffffff-ffff-ffff-ffff-ffffffffffff"),
-            AccountId = CrmAuthorizationService.DeniedConfidentialAccountId,
+            AccountId = ConfidentialPartnerId,
             FullName = "Restricted Contact",
             EmailAddress1 = "restricted@confidential.example",
             Telephone1 = "+20-100-555-9999",

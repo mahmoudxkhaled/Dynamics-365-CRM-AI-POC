@@ -1,0 +1,35 @@
+@if (message.role === 'meta') {
+  <div class="msg meta">{{ message.text }}</div>
+} @else if (message.role === 'user') {
+  <div
+    class="msg user"
+    [class.rtl]="arabic"
+    [attr.dir]="arabic ? 'rtl' : null"
+  >{{ message.text }}</div>
+} @else if (mode === 'count') {
+  <div
+    class="msg assistant"
+    [class.rtl]="arabic"
+    [attr.dir]="arabic ? 'rtl' : null"
+  >
+    <div class="count-badge">{{ countLabel }}: {{ message.structuredData?.count }}{{ countCapped }}</div>
+    <div class="msg-meta-lines">{{ summary }}</div>
+  </div>
+} @else if (mode === 'table') {
+  <div class="msg assistant has-table">
+    @if (summary) {
+      <p class="msg-summary" [attr.dir]="arabic ? 'rtl' : null">{{ summaryFirst }}</p>
+    }
+    <app-crm-results-table [structuredData]="message.structuredData" />
+    @if (summaryRest) {
+      <div class="msg-meta-lines" [attr.dir]="arabic ? 'rtl' : null">{{ summaryRest }}</div>
+    }
+  </div>
+} @else {
+  <div
+    class="msg assistant plain"
+    [class.rtl]="arabic"
+    [class.error]="message.error"
+    [attr.dir]="arabic ? 'rtl' : null"
+  >{{ message.text || message.reply }}</div>
+}

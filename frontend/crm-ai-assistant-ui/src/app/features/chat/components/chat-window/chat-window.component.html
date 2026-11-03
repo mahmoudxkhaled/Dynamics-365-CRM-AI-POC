@@ -1,0 +1,11 @@
+<section class="panel chat-panel">
+  <div class="panel-head">
+    <h2>AI Chat <span class="panel-head-meta">Ask in Arabic or English</span></h2>
+  </div>
+  <div class="chat" #chatScroll>
+    @for (msg of messages; track trackById($index, msg)) {
+      <app-chat-message [message]="msg" />
+    }
+  </div>
+  <app-chat-input [disabled]="loading" (send)="onSend($event)" />
+</section>

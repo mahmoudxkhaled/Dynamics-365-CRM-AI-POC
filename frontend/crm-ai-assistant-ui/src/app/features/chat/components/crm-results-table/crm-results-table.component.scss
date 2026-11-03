@@ -1,0 +1,5 @@
+/* Table chrome lives in global styles (parity with wwwroot). */
+:host {
+  display: block;
+  max-width: 100%;
+}

@@ -1,0 +1,28 @@
+@if (columns.length) {
+  <div class="table-wrap" dir="ltr">
+    <table class="crm-table">
+      <thead>
+        <tr>
+          @for (col of columns; track col.key; let i = $index) {
+            <th [class]="headerClasses[i]">{{ col.label }}</th>
+          }
+        </tr>
+      </thead>
+      <tbody>
+        @if (empty) {
+          <tr>
+            <td class="col-empty" [attr.colspan]="columns.length">No records returned</td>
+          </tr>
+        } @else {
+          @for (row of rows; track $index) {
+            <tr>
+              @for (cell of row.cells; track $index) {
+                <td [class]="cell.cssClass">{{ cell.text }}</td>
+              }
+            </tr>
+          }
+        }
+      </tbody>
+    </table>
+  </div>
+}

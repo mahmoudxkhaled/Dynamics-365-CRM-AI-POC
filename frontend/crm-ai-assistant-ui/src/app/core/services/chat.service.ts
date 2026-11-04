@@ -10,7 +10,7 @@ export class ChatService {
   constructor(
     private readonly http: HttpClient,
     private readonly apiConfig: ApiConfigService
-  ) {}
+  ) { }
 
   sendMessage(message: string, conversationId: string | null): Observable<ChatResponse> {
     const body: ChatRequest = {

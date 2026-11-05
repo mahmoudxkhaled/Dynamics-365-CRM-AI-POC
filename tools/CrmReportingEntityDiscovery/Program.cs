@@ -1,9 +1,8 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 // Read-only Dynamics 365 On-Prem reporting-entity discovery.
@@ -86,7 +85,7 @@ foreach (var row in entityRows)
         PrimaryIdAttribute = GetString(row, "PrimaryIdAttribute"),
         PrimaryNameAttribute = GetString(row, "PrimaryNameAttribute"),
         IsCustomEntity = GetBool(row, "IsCustomEntity") ?? false,
-        OwnershipType = MapOwnership(GetInt(row, "OwnershipType")),
+        OwnershipType = MapOwnership(GetInt(row, "OwnershipType"), GetString(row, "OwnershipType")),
         IsValidForAdvancedFind = GetBool(row, "IsValidForAdvancedFind"),
         ObjectTypeCode = objectTypeCode,
         IsCurrentlyApproved = approved.Contains(logical),
@@ -131,7 +130,7 @@ var reportCategories = new List<object>();
 var reportRows = await TryGetAllODataAsync(
     http,
     baseUrl,
-    "reports?$select=reportid,name,description,filename,reporttypecode,iscustomreport,ispersonal,languagecode,createdon,modifiedon,reportcategoryid&$orderby=name",
+    "reports?$select=reportid,name,description,filename,reporttypecode,iscustomreport,ispersonal,languagecode,createdon,modifiedon&$orderby=name",
     reportNotes,
     "reports");
 foreach (var r in reportRows)
@@ -157,23 +156,44 @@ var reportEntityRows = await TryGetAllODataAsync(
     "reportentities?$select=reportentityid,reportid,objecttypecode",
     reportNotes,
     "reportentities");
+if (reportEntityRows.Count > 0)
+{
+    Console.WriteLine("Sample reportentity properties: " +
+                      string.Join(", ", reportEntityRows[0].EnumerateObject().Select(p => $"{p.Name}={Truncate(p.Value.ToString(), 40)}")));
+}
+
 foreach (var re in reportEntityRows)
 {
-    var otc = GetInt(re, "objecttypecode");
+    // On-Prem may return objecttypecode as int type-code OR as entity logical name string.
+    var otc = GetInt(re, "objecttypecode") ?? GetInt(re, "ObjectTypeCode");
+    var otcRaw = GetString(re, "objecttypecode") ?? GetString(re, "ObjectTypeCode") ?? GetString(re, "name");
     string? logical = null;
     if (otc is int code)
     {
         objectTypeToLogical.TryGetValue(code, out logical);
     }
 
+    if (logical is null && !string.IsNullOrWhiteSpace(otcRaw))
+    {
+        if (int.TryParse(otcRaw, out var parsedCode))
+        {
+            objectTypeToLogical.TryGetValue(parsedCode, out logical);
+            otc ??= parsedCode;
+        }
+        else if (entities.Any(e => e.LogicalName.Equals(otcRaw, StringComparison.OrdinalIgnoreCase)))
+        {
+            logical = otcRaw;
+        }
+    }
+
     reportEntities.Add(new ReportEntityRef
     {
-        ReportId = GetGuid(re, "reportid"),
+        ReportId = GetGuid(re, "reportid") ?? GetGuid(re, "ReportId"),
         ObjectTypeCode = otc,
         EntityLogicalName = logical,
         EvidenceKind = logical is null
             ? "objecttypecode_unmapped"
-            : "reportentities_objecttypecode_mapped"
+            : (otc is null ? "reportentities_logicalname_string" : "reportentities_objecttypecode_mapped")
     });
 }
 
@@ -241,13 +261,22 @@ foreach (var v in userRows)
 
 reportNotes.Add("Report usage/frequency statistics are not available via these metadata endpoints; no popularity invented.");
 reportNotes.Add("Report binaries / fetchxml datasets / filter values were not retrieved.");
-reportNotes.Add("Entity references from reportentities use ObjectTypeCode→LogicalName mapping from EntityDefinitions (observed).");
+reportNotes.Add("Observed: reportentities.objecttypecode is an entity logical name string on this org (not a numeric type code).");
+reportNotes.Add("Observed: reportentities rows often omit reportid in Web API payloads; hit counts use link-row counts per entity.");
 reportNotes.Add("View ReturnedTypeCode is treated as entity logical name when it matches an EntityDefinitions LogicalName.");
 
+// On-Prem reportentities often omit reportid in $select payloads; count link rows per entity logical name.
 var entityReportHits = reportEntities
     .Where(x => !string.IsNullOrWhiteSpace(x.EntityLogicalName))
     .GroupBy(x => x.EntityLogicalName!, StringComparer.OrdinalIgnoreCase)
-    .ToDictionary(g => g.Key, g => g.Select(x => x.ReportId).Where(id => id.HasValue).Select(id => id!.Value).Distinct().Count(), StringComparer.OrdinalIgnoreCase);
+    .ToDictionary(
+        g => g.Key,
+        g =>
+        {
+            var withIds = g.Select(x => x.ReportId).Where(id => id.HasValue).Select(id => id!.Value).Distinct().Count();
+            return withIds > 0 ? withIds : g.Count();
+        },
+        StringComparer.OrdinalIgnoreCase);
 
 var entityViewHits = systemViews.Concat(userViews)
     .Where(v => !string.IsNullOrWhiteSpace(v.ReturnedTypeCode))
@@ -276,7 +305,7 @@ var reportInventoryPayload = new
     entityHitSummary = new
     {
         fromReports = entityReportHits.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key)
-            .Select(kv => new { entity = kv.Key, distinctReportCount = kv.Value }).ToList(),
+            .Select(kv => new { entity = kv.Key, reportEntityLinkCount = kv.Value }).ToList(),
         fromViews = entityViewHits.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key)
             .Select(kv => new { entity = kv.Key, viewCount = kv.Value }).ToList()
     }
@@ -781,7 +810,12 @@ static string BuildMarkdown(
         if (i >= 8) phase = 2;
         if (i >= 15) phase = 3;
 
-        var useful = detail.Attributes.Where(a => a.UsefulForReporting).Take(18).ToList();
+        var useful = detail.Attributes
+            .Where(a => a.UsefulForReporting && IsPrimaryReportingAttribute(a.LogicalName, a.AttributeType))
+            .OrderBy(a => ReportingFieldRank(a.AttributeType))
+            .ThenBy(a => a.LogicalName)
+            .Take(18)
+            .ToList();
         var money = detail.Attributes.Where(a => string.Equals(a.AttributeType, "Money", StringComparison.OrdinalIgnoreCase)).Select(a => a.LogicalName);
         var dates = detail.Attributes.Where(a => string.Equals(a.AttributeType, "DateTime", StringComparison.OrdinalIgnoreCase)).Select(a => a.LogicalName);
         var statusish = detail.Attributes.Where(a =>
@@ -800,7 +834,7 @@ static string BuildMarkdown(
         sb.AppendLine($"- **Reporting priority:** {priority} (score={c.Score:0})");
         sb.AppendLine($"- **Recommended approval phase:** Phase {phase}");
         sb.AppendLine($"- **Currently approved:** {(c.Entity.IsCurrentlyApproved ? "Yes" : "No")}");
-        sb.AppendLine($"- **Observed report evidence:** {c.ReportDistinctCount} distinct report link(s) via reportentities mapping");
+        sb.AppendLine($"- **Observed report evidence:** {c.ReportDistinctCount} reportentities link row(s) (entity logical name references)");
         sb.AppendLine($"- **Observed view evidence:** {c.ViewCount} savedquery/userquery row(s) with matching ReturnedTypeCode");
         sb.AppendLine($"- **Ownership:** {c.Entity.OwnershipType}; Advanced Find valid: {c.Entity.IsValidForAdvancedFind?.ToString() ?? "unknown"}");
         sb.AppendLine($"- **Counts (observed):** attributes={c.Entity.AttributesCount?.ToString() ?? "?"}, relationships={c.Entity.RelationshipsCount?.ToString() ?? "?"}");
@@ -894,58 +928,51 @@ static string BuildMarkdown(
     return sb.ToString();
 }
 
-static IEnumerable<(string Question, string Feasibility)> ExampleQuestions(string logical) => logical.ToLowerInvariant() switch
+static IEnumerable<(string Question, string Feasibility)> ExampleQuestions(string logical)
 {
-    "opportunity" =>
-    [
-        ("How many open opportunities by month this year?", "Supported: aggregate + date + groupBy month (root-only)"),
-        ("Top opportunities with account name", "Supported: list + linksJson to account"),
-        ("Opportunity revenue by account this quarter", "Unsupported until aggregate+linksJson; workaround: aggregate on opportunity with customerid grouping if local attribute exists")
-    ],
-    "salesorderdetail" =>
-    [
-        ("Monthly ordered quantity by product for 2025", "Supported if aggregating on salesorderdetail root with date field + product groupBy"),
-        ("Order lines for a sales order with product name", "Supported: list + linksJson product (not aggregate+link)"),
-        ("Total line amount by customer account", "Unsupported as aggregate+link via salesorder→account; needs engine enhancement or denormalized fields")
-    ],
-    "quote" =>
-    [
-        ("Count of quotes created last 8 calendar months", "Supported: count/aggregate + dateRange"),
-        ("Quotes with customer account", "Supported: list + linksJson")
-    ],
-    "invoice" =>
-    [
-        ("Invoiced amount by month for 2025", "Supported: aggregate on invoice root if Money + createdon/date fields exist"),
-        ("Invoices with related sales order", "Supported: list + linksJson (not aggregate+link)")
-    ],
-    "product" =>
-    [
-        ("List active products", "Supported: list + status filter"),
-        ("Count products by product type", "Supported: aggregate + groupBy picklist if present")
-    ],
-    "campaign" =>
-    [
-        ("Campaigns started this year", "Supported: list/count + date filter"),
-        ("Campaign responses by campaign", "May require campaignresponse entity approval; aggregate+link unsupported")
-    ],
-    "systemuser" =>
-    [
-        ("Orders owned by user X (via owner)", "Supported indirectly via ownerid filter on transactional entities; listing users: list on systemuser"),
-        ("Count orders by owner", "Supported: aggregate groupBy ownerid on salesorder (already approved) — systemuser approval helps label enrichment via link on list only")
-    ],
-    "businessunit" =>
-    [
-        ("List business units", "Supported: list"),
-        ("Orders by business unit", "Supported: aggregate groupBy owningbusinessunit on salesorder; BU entity helps list enrichment")
-    ],
-    _ =>
-    [
-        ("List recent records", "Supported when approved: list + sort + date"),
-        ("Count records in a calendar period", "Supported: count/aggregate + dateRange"),
-        ("Aggregate with related entity attributes", "Unsupported: aggregate + linksJson")
+    switch (logical.ToLowerInvariant())
+    {
+        case "opportunity":
+            yield return ("How many open opportunities by month this year?", "Supported: aggregate + date + groupBy month (root-only)");
+            yield return ("Top opportunities with account name", "Supported: list + linksJson to account");
+            yield return ("Opportunity revenue by account this quarter", "Unsupported until aggregate+linksJson");
+            yield break;
+        case "salesorderdetail":
+            yield return ("Monthly ordered quantity by product for 2025", "Supported if aggregating on salesorderdetail root");
+            yield return ("Order lines for a sales order with product name", "Supported: list + linksJson product");
+            yield return ("Total line amount by customer account", "Unsupported as aggregate+link; needs engine enhancement");
+            yield break;
+        case "quote":
+            yield return ("Count of quotes created last 8 calendar months", "Supported: count/aggregate + dateRange");
+            yield return ("Quotes with customer account", "Supported: list + linksJson");
+            yield break;
+        case "invoice":
+            yield return ("Invoiced amount by month for 2025", "Supported: aggregate on invoice root if Money + date fields exist");
+            yield return ("Invoices with related sales order", "Supported: list + linksJson (not aggregate+link)");
+            yield break;
+        case "product":
+            yield return ("List active products", "Supported: list + status filter");
+            yield return ("Count products by product type", "Supported: aggregate + groupBy picklist if present");
+            yield break;
+        case "campaign":
+            yield return ("Campaigns started this year", "Supported: list/count + date filter");
+            yield return ("Campaign responses by campaign", "May require campaignresponse approval; aggregate+link unsupported");
+            yield break;
+        case "systemuser":
+            yield return ("List users", "Supported: list on systemuser");
+            yield return ("Count orders by owner", "Supported via aggregate groupBy ownerid on salesorder; systemuser helps list enrichment");
+            yield break;
+        case "businessunit":
+            yield return ("List business units", "Supported: list");
+            yield return ("Orders by business unit", "Supported: aggregate groupBy owningbusinessunit on salesorder");
+            yield break;
+        default:
+            yield return ("List recent records", "Supported when approved: list + sort + date");
+            yield return ("Count records in a calendar period", "Supported: count/aggregate + dateRange");
+            yield return ("Aggregate with related entity attributes", "Unsupported: aggregate + linksJson");
+            yield break;
     }
-};
-
+}
 static string JoinOrNone(IEnumerable<string?> values)
 {
     var arr = values.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => $"`{v}`").ToArray();
@@ -954,22 +981,49 @@ static string JoinOrNone(IEnumerable<string?> values)
 
 static string EscapeOData(string value) => value.Replace("'", "''", StringComparison.Ordinal);
 
-static string? GetString(JsonElement el, string name) =>
-    el.TryGetProperty(name, out var p)
-        ? p.ValueKind switch
+static bool TryGetPropertyIgnoreCase(JsonElement el, string name, out JsonElement value)
+{
+    if (el.TryGetProperty(name, out value))
+    {
+        return true;
+    }
+
+    foreach (var prop in el.EnumerateObject())
+    {
+        if (prop.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
         {
-            JsonValueKind.String => p.GetString(),
-            JsonValueKind.Number => p.GetRawText(),
-            JsonValueKind.True => "true",
-            JsonValueKind.False => "false",
-            JsonValueKind.Null => null,
-            _ => p.ToString()
+            value = prop.Value;
+            return true;
         }
-        : null;
+    }
+
+    value = default;
+    return false;
+}
+
+static string? GetString(JsonElement el, string name)
+{
+    if (!TryGetPropertyIgnoreCase(el, name, out var p))
+    {
+        return null;
+    }
+
+    return p.ValueKind switch
+    {
+        JsonValueKind.String => p.GetString(),
+        JsonValueKind.Number => p.GetRawText(),
+        JsonValueKind.True => "true",
+        JsonValueKind.False => "false",
+        JsonValueKind.Null => null,
+        JsonValueKind.Object when p.TryGetProperty("Value", out var v) =>
+            v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString(),
+        _ => p.ToString()
+    };
+}
 
 static int? GetInt(JsonElement el, string name)
 {
-    if (!el.TryGetProperty(name, out var p))
+    if (!TryGetPropertyIgnoreCase(el, name, out var p))
     {
         return null;
     }
@@ -984,12 +1038,26 @@ static int? GetInt(JsonElement el, string name)
         return s;
     }
 
+    // Metadata enums often serialize as { "Value": 1 }
+    if (p.ValueKind == JsonValueKind.Object && p.TryGetProperty("Value", out var v))
+    {
+        if (v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var ev))
+        {
+            return ev;
+        }
+
+        if (v.ValueKind == JsonValueKind.String && int.TryParse(v.GetString(), out var es))
+        {
+            return es;
+        }
+    }
+
     return null;
 }
 
 static bool? GetBool(JsonElement el, string name)
 {
-    if (!el.TryGetProperty(name, out var p))
+    if (!TryGetPropertyIgnoreCase(el, name, out var p))
     {
         return null;
     }
@@ -1045,14 +1113,46 @@ static string? GetLocalized(JsonElement el, string name)
     return null;
 }
 
-static string MapOwnership(int? value) => value switch
+static string MapOwnership(int? value, string? raw) => value switch
 {
     0 => "None",
     1 => "UserOwned",
     2 => "BusinessOwned",
     3 => "OrganizationOwned",
+    _ when !string.IsNullOrWhiteSpace(raw) && !raw.Contains('{', StringComparison.Ordinal) => raw!,
     _ => value?.ToString() ?? "Unknown"
 };
+
+static int ReportingFieldRank(string? type) => (type ?? "").ToLowerInvariant() switch
+{
+    "money" => 0,
+    "decimal" or "double" or "integer" or "bigint" => 1,
+    "datetime" => 2,
+    "state" or "status" or "picklist" or "owner" or "customer" or "lookup" => 3,
+    "boolean" => 4,
+    "string" or "memo" => 8,
+    _ => 9
+};
+
+static bool IsPrimaryReportingAttribute(string? logical, string? type)
+{
+    if (string.IsNullOrWhiteSpace(logical))
+    {
+        return false;
+    }
+
+    var n = logical.ToLowerInvariant();
+    if (n.StartsWith("address", StringComparison.Ordinal)
+        || n.StartsWith("yomi", StringComparison.Ordinal)
+        || n.StartsWith("entityimage", StringComparison.Ordinal)
+        || n is "traversedpath" or "passporthi" or "passportlo" or "utcconversiontimezonecode"
+        || n.EndsWith("name", StringComparison.Ordinal) && (type?.Equals("String", StringComparison.OrdinalIgnoreCase) ?? false))
+    {
+        return false;
+    }
+
+    return true;
+}
 
 static string Truncate(string? s, int max) =>
     string.IsNullOrEmpty(s) ? "" : s.Length <= max ? s : s[..max] + "…";

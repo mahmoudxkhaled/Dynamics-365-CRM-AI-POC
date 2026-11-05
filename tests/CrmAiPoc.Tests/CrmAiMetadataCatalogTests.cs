@@ -14,16 +14,11 @@ public class CrmAiMetadataCatalogTests
     private static (CrmOptions Options, EntityApprovalPolicy Policy, ICrmMetadataService Metadata, ICrmAiMetadataCatalogService Catalog)
         CreateStack(
             bool allowCatalog = true,
-            IEnumerable<string>? approved = null,
-            int maxAttrs = 20,
-            int maxChars = 6000)
+            IEnumerable<string>? approved = null)
     {
         var options = new CrmOptions
         {
             AllowSendApprovedMetadataCatalogToAi = allowCatalog,
-            AiMetadataCatalogMaxEntities = 8,
-            AiMetadataCatalogMaxAttributesPerEntity = maxAttrs,
-            AiMetadataCatalogMaxChars = maxChars,
             ApprovedEntities = (approved ?? ["account", "contact", "salesorder", "lead"]).ToList(),
             BusinessTimeZoneId = "Africa/Cairo",
             EntityAliases = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
@@ -33,7 +28,7 @@ public class CrmAiMetadataCatalogTests
                 ["salesorder"] = ["sales order", "sales orders", "orders"],
                 ["lead"] = ["leads", "prospects"]
             }
-};
+        };
         var opts = Options.Create(options);
         var policy = new EntityApprovalPolicy(opts);
         var registry = new CrmMetadataRegistry();
@@ -120,12 +115,103 @@ public class CrmAiMetadataCatalogTests
     }
 
     [Fact]
-    public async Task Catalog_Respects_Attribute_Size_Limits()
+    public async Task Catalog_Sends_All_Readable_Attributes_For_Approved_Entities()
     {
-        var (_, _, _, catalog) = CreateStack(maxAttrs: 5);
+        var (_, _, metadata, catalog) = CreateStack();
+        await metadata.EnsureApprovedEntitiesLoadedAsync();
+        var account = await metadata.GetEntityAsync("account");
+        Assert.NotNull(account);
         var result = await catalog.BuildApprovedCatalogAsync();
-        Assert.All(result.Catalog.Entities, e => Assert.True(e.Attributes.Count <= 5));
+        Assert.True(result.Success, result.Error);
+        Assert.False(result.TruncationApplied);
+        var catalogAccount = Assert.Single(result.Catalog.Entities, e => e.LogicalName == "account");
+        Assert.Equal(account!.Attributes.Count(a => a.IsValidForRead), catalogAccount.Attributes.Count);
+        Assert.True(catalogAccount.Attributes.Count > 5);
     }
+
+    [Fact]
+    public async Task Catalog_Poc_Includes_Required_Money_Fields_When_Present_In_Metadata()
+    {
+        var options = Options.Create(new CrmOptions
+        {
+            AllowSendApprovedMetadataCatalogToAi = true,
+            ApprovedEntities = ["opportunity", "invoice", "product", "campaign"]
+        });
+        var policy = new EntityApprovalPolicy(options);
+        var registry = new CrmMetadataRegistry();
+        registry.Upsert(MakeEntity("opportunity", ("estimatedvalue", CrmAttributeKind.Money, "Est. Revenue"), ("name", CrmAttributeKind.String, "Opportunity Name")));
+        registry.Upsert(MakeEntity("invoice", ("totalamount", CrmAttributeKind.Money, "Total Amount"), ("name", CrmAttributeKind.String, "Invoice")));
+        registry.Upsert(MakeEntity("product", ("price", CrmAttributeKind.Money, "List Price"), ("name", CrmAttributeKind.String, "Product")));
+        registry.Upsert(MakeEntity(
+            "campaign",
+            ("name", CrmAttributeKind.String, "Campaign"),
+            ("statecode", CrmAttributeKind.State, "Status")));
+
+        // Enrich campaign state options as discovery would.
+        var campaign = registry.GetApproved().Single(e => e.LogicalName == "campaign");
+        var state = campaign.Attributes.Single(a => a.LogicalName == "statecode");
+        registry.Upsert(new CrmEntityMetadata
+        {
+            LogicalName = campaign.LogicalName,
+            EntitySetName = campaign.EntitySetName,
+            DisplayName = campaign.DisplayName,
+            PrimaryIdAttribute = campaign.PrimaryIdAttribute,
+            PrimaryNameAttribute = campaign.PrimaryNameAttribute,
+            IsApprovedForAi = true,
+            Attributes =
+            [
+                campaign.Attributes.Single(a => a.LogicalName == "name"),
+                new CrmAttributeMetadata
+                {
+                    LogicalName = "statecode",
+                    ODataPropertyName = "statecode",
+                    DisplayName = "Status",
+                    Kind = CrmAttributeKind.State,
+                    IsValidForRead = true,
+                    IsFilterable = true,
+                    OptionSetByLabel = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase) { ["Active"] = 0 },
+                    OptionSetByValue = new Dictionary<int, string> { [0] = "Active" }
+                }
+            ]
+        });
+
+        var catalog = new CrmAiMetadataCatalogService(
+            registry,
+            policy,
+            new CrmRelationshipLabeler(options),
+            options,
+            NullLogger<CrmAiMetadataCatalogService>.Instance);
+        var result = await catalog.BuildApprovedCatalogAsync("Show the top 10 opportunities by estimated revenue.");
+        Assert.True(result.Success, result.Error);
+        Assert.Contains("estimatedvalue", result.FormattedBlock);
+        Assert.Contains("Est. Revenue", result.FormattedBlock);
+        Assert.Contains("totalamount", result.FormattedBlock);
+        Assert.Contains("\"logicalName\":\"price\"", result.FormattedBlock);
+        Assert.Contains("List Price", result.FormattedBlock);
+        Assert.Contains("statecode", result.FormattedBlock);
+        Assert.Contains("Active", result.FormattedBlock);
+    }
+
+    private static CrmEntityMetadata MakeEntity(string logical, params (string Name, CrmAttributeKind Kind, string Display)[] attrs) =>
+        new()
+        {
+            LogicalName = logical,
+            EntitySetName = logical + "s",
+            DisplayName = logical,
+            PrimaryIdAttribute = logical + "id",
+            PrimaryNameAttribute = "name",
+            IsApprovedForAi = true,
+            Attributes = attrs.Select(a => new CrmAttributeMetadata
+            {
+                LogicalName = a.Name,
+                ODataPropertyName = a.Name,
+                DisplayName = a.Display,
+                Kind = a.Kind,
+                IsValidForRead = true,
+                IsFilterable = true,
+                IsSortable = a.Kind is CrmAttributeKind.Money or CrmAttributeKind.DateTime or CrmAttributeKind.String
+            }).ToArray()
+        };
 
     [Fact]
     public async Task Catalog_Contains_No_Record_Values()

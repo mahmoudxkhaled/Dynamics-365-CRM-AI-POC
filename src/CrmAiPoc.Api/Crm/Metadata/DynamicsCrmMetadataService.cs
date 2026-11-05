@@ -357,11 +357,11 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
     /// </summary>
     private string BuildApprovedEntityODataFilter()
     {
+        // POC: include every approved entity in the relationship OData filter (no Take cap).
         var names = _policy.ApprovedLogicalNames
             .Where(n => !string.IsNullOrWhiteSpace(n))
             .Select(n => n.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(12)
             .ToArray();
         if (names.Length == 0)
         {

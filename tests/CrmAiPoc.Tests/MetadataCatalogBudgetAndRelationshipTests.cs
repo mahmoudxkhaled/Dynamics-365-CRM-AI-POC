@@ -8,18 +8,11 @@ namespace CrmAiPoc.Tests;
 
 public sealed class MetadataCatalogBudgetAndRelationshipTests
 {
-    private static CrmAiMetadataCatalogService CreateCatalog(
-        IEnumerable<string> approved,
-        int maxChars,
-        int maxAttrs = 16,
-        int maxDetail = 12)
+    private static CrmAiMetadataCatalogService CreateCatalog(IEnumerable<string> approved)
     {
         var options = new CrmOptions
         {
             AllowSendApprovedMetadataCatalogToAi = true,
-            AiMetadataCatalogMaxChars = maxChars,
-            AiMetadataCatalogMaxAttributesPerEntity = maxAttrs,
-            AiMetadataCatalogMaxEntities = maxDetail,
             ApprovedEntities = approved.ToList(),
             EntityAliases = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
             {
@@ -45,46 +38,47 @@ public sealed class MetadataCatalogBudgetAndRelationshipTests
     }
 
     [Fact]
-    public async Task Catalog_Succeeds_With_Compact_Index_And_Detail()
+    public async Task Catalog_Succeeds_With_Full_Approved_Detail()
     {
-        var catalog = CreateCatalog(["account", "contact", "salesorder", "lead"], maxChars: 12000);
+        var catalog = CreateCatalog(["account", "contact", "salesorder", "lead"]);
         var result = await catalog.BuildApprovedCatalogAsync(
             "Show the 10 highest-value Sales Orders created this year, including their customer account names.");
 
         Assert.True(result.Success, result.Error);
         Assert.Equal(4, result.IncludedEntityCount);
+        Assert.Equal(4, result.Catalog.Detail.Count);
+        Assert.False(result.TruncationApplied);
         Assert.Contains(result.Catalog.Index, e => e.LogicalName == "salesorder");
         Assert.Contains(result.Catalog.Detail, e => e.LogicalName == "salesorder");
-        Assert.True(result.IncludedRelationshipCount > 0);
         Assert.Contains("\"index\"", result.FormattedBlock);
         Assert.Contains("\"detail\"", result.FormattedBlock);
-        Assert.True(result.FinalCharacterCount <= result.ConfiguredBudget);
+        Assert.Contains("poc-full-approved-metadata", result.FormattedBlock);
     }
 
     [Fact]
-    public async Task Catalog_Scales_To_Many_Approved_Entities()
+    public async Task Catalog_Includes_All_Approved_Entities_Ignoring_Former_Caps()
     {
         var approved = Enumerable.Range(1, 24).Select(i => $"customentity{i:00}").Append("salesorder").Append("account").ToList();
-        var catalog = CreateCatalog(approved, maxChars: 12000, maxDetail: 8, maxAttrs: 8);
+        var catalog = CreateCatalog(approved);
         var result = await catalog.BuildApprovedCatalogAsync("latest sales orders with customer account");
 
         Assert.True(result.Success, result.Error);
         Assert.Equal(approved.Count, result.IncludedEntityCount);
-        Assert.True(result.Catalog.Detail.Count <= 8);
-        Assert.True(result.TruncationApplied || result.Catalog.Detail.Count < approved.Count);
+        Assert.Equal(approved.Count, result.Catalog.Detail.Count);
+        Assert.False(result.TruncationApplied);
+        Assert.False(string.IsNullOrWhiteSpace(result.FormattedBlock));
     }
 
     [Fact]
-    public async Task Catalog_Budget_Overflow_Fails_Without_Empty_Success()
+    public async Task Catalog_Does_Not_Fail_On_Former_Char_Budget()
     {
-        var catalog = CreateCatalog(["account", "contact", "salesorder", "lead"], maxChars: 200, maxAttrs: 20, maxDetail: 8);
+        var catalog = CreateCatalog(["account", "contact", "salesorder", "lead"]);
         var result = await catalog.BuildApprovedCatalogAsync("sales orders with customer account");
 
         Assert.True(result.Enabled);
-        Assert.False(result.Success);
-        Assert.Contains("budget", result.Error, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(string.Empty, result.FormattedBlock);
-        Assert.True(result.TruncationApplied);
+        Assert.True(result.Success, result.Error);
+        Assert.False(result.TruncationApplied);
+        Assert.False(string.IsNullOrWhiteSpace(result.FormattedBlock));
     }
 
     [Fact]

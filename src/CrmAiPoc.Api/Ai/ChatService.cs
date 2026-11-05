@@ -212,10 +212,24 @@ public sealed partial class ChatService
             Temperature = 0.1f
         };
 
+        LogPocAiRequestTrace(userMessage, catalog, outboundHistory);
+
         ChatResponse modelResponse;
         try
         {
             modelResponse = await GetResponseWithRetryAsync(outboundHistory, chatOptions, cancellationToken);
+        }
+        catch (Exception ex) when (IsProviderLimitOrTransportFailure(ex))
+        {
+            _logger.LogError(
+                ex,
+                "[AI ERROR] Provider rejected or failed the request. MetadataPayloadSize={MetadataPayloadSize} Message={Message}",
+                catalog.CharacterCount,
+                ex.Message);
+            return CreateResponse(
+                session,
+                $"The AI provider rejected or failed the request (payload chars={catalog.CharacterCount}): {ex.Message}",
+                outboundWasSafe: audit.SafeForLiveCrm);
         }
         catch (Exception ex) when (ex is OperationCanceledException or TimeoutException or HttpRequestException
                                    || ex.GetType().Name.Contains("ClientResult", StringComparison.Ordinal)
@@ -223,7 +237,10 @@ public sealed partial class ChatService
                                    || ex.Message.Contains("canceled", StringComparison.OrdinalIgnoreCase)
                                    || ex.Message.Contains("cancelled", StringComparison.OrdinalIgnoreCase))
         {
-            _logger.LogWarning(ex, "AI provider timed out or failed; not fabricating a CRM query.");
+            _logger.LogWarning(
+                ex,
+                "AI provider timed out or failed; MetadataPayloadSize={MetadataPayloadSize}. Not fabricating a CRM query.",
+                catalog.CharacterCount);
             return CreateResponse(
                 session,
                 "The AI planner did not respond in time. Please retry your question.",
@@ -243,10 +260,11 @@ public sealed partial class ChatService
 
         var call = functionCalls[0];
         _logger.LogInformation(
-            "Selected AI function: {FunctionName} | entity={Entity} | operation={Operation}",
+            "[AI RESPONSE] Selected AI function: {FunctionName} | entity={Entity} | operation={Operation} | arguments={Arguments}",
             call.Name,
             GetArgValue(call.Arguments, "entity"),
-            GetArgValue(call.Arguments, "operation"));
+            GetArgValue(call.Arguments, "operation"),
+            FormatToolArguments(call.Arguments));
 
         if (string.Equals(call.Name, "query_crm", StringComparison.OrdinalIgnoreCase))
         {
@@ -514,6 +532,91 @@ public sealed partial class ChatService
                || message.Contains("temporarily", StringComparison.OrdinalIgnoreCase)
                || message.Contains("429", StringComparison.OrdinalIgnoreCase)
                || message.Contains("503", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// POC development trace: prove what approved metadata was actually sent (no silent truncation).
+    /// </summary>
+    private void LogPocAiRequestTrace(
+        string userMessage,
+        CrmAiMetadataCatalogBuildResult catalog,
+        IReadOnlyList<ChatMessage> outboundHistory)
+    {
+        var block = catalog.FormattedBlock ?? string.Empty;
+        var hasEstimatedValue = block.Contains("estimatedvalue", StringComparison.OrdinalIgnoreCase);
+        var hasInvoiceTotal = block.Contains("\"logicalName\":\"totalamount\"", StringComparison.OrdinalIgnoreCase)
+                              || block.Contains("totalamount", StringComparison.OrdinalIgnoreCase);
+        var hasProductPrice = block.Contains("\"logicalName\":\"price\"", StringComparison.OrdinalIgnoreCase);
+        var hasCampaignState = block.Contains("statecode", StringComparison.OrdinalIgnoreCase);
+
+        _logger.LogInformation(
+            "[AI REQUEST] MetadataPayloadSize={MetadataPayloadSize} ApprovedEntityCount={ApprovedEntityCount} " +
+            "IncludedEntityCount={IncludedEntityCount} IncludedAttributeCount={IncludedAttributeCount} " +
+            "IncludedRelationshipCount={IncludedRelationshipCount} TruncationApplied={TruncationApplied} " +
+            "HasOpportunityEstimatedValue={HasOpportunityEstimatedValue} HasInvoiceTotalAmount={HasInvoiceTotalAmount} " +
+            "HasProductPrice={HasProductPrice} HasCampaignStateCode={HasCampaignStateCode} UserMessageLength={UserMessageLength} " +
+            "OutboundMessageCount={OutboundMessageCount}",
+            catalog.CharacterCount,
+            catalog.ApprovedEntityCount,
+            catalog.IncludedEntityCount,
+            catalog.IncludedAttributeCount,
+            catalog.IncludedRelationshipCount,
+            catalog.TruncationApplied,
+            hasEstimatedValue,
+            hasInvoiceTotal,
+            hasProductPrice,
+            hasCampaignState,
+            userMessage.Length,
+            outboundHistory.Count);
+
+        // Development-only: dump the exact catalog block so presence can be verified without a new logging framework.
+        if (_crmOptions.AllowSendApprovedMetadataCatalogToAi &&
+            !string.IsNullOrWhiteSpace(block) &&
+            string.Equals(
+                Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"),
+                "Development",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            var path = Path.Combine(Path.GetTempPath(), "crm-poc-ai-request-metadata-catalog.txt");
+            File.WriteAllText(path, block);
+            _logger.LogInformation(
+                "[AI REQUEST] MetadataCatalogSentToAi written to {Path} (chars={Chars})",
+                path,
+                block.Length);
+        }
+    }
+
+    private static bool IsProviderLimitOrTransportFailure(Exception ex)
+    {
+        var message = ex.Message ?? string.Empty;
+        return message.Contains("context length", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("context_window", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("maximum context", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("too many tokens", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("token limit", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("request too large", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("payload too large", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("413", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("max_tokens", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("reduce the length", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string FormatToolArguments(IDictionary<string, object?>? arguments)
+    {
+        if (arguments is null || arguments.Count == 0)
+        {
+            return "{}";
+        }
+
+        try
+        {
+            return System.Text.Json.JsonSerializer.Serialize(
+                arguments.ToDictionary(kv => kv.Key, kv => kv.Value));
+        }
+        catch
+        {
+            return string.Join("; ", arguments.Select(kv => $"{kv.Key}={kv.Value}"));
+        }
     }
 
     private static bool LooksLikeWriteRequest(string text) =>

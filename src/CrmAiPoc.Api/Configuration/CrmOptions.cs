@@ -37,23 +37,11 @@ public sealed class CrmOptions
     public string BusinessTimeZoneId { get; set; } = "Africa/Cairo";
 
     /// <summary>
-    /// When true, a compact approved CRM metadata catalog (entities/fields only — never records)
+    /// When true, the full approved CRM metadata catalog (entities/fields/relationships only — never records)
     /// is included in the outbound AI context. Default false; enable explicitly for PoC/Dev.
     /// Live CRM rows are never sent to the AI (privacy-safe by design).
     /// </summary>
     public bool AllowSendApprovedMetadataCatalogToAi { get; set; }
-
-    /// <summary>
-    /// Max entities expanded with attributes/relationships in the AI catalog detail section.
-    /// All approved entities remain in the compact index regardless of this cap.
-    /// </summary>
-    public int AiMetadataCatalogMaxEntities { get; set; } = 12;
-
-    /// <summary>Max attributes per detailed entity in the AI metadata catalog.</summary>
-    public int AiMetadataCatalogMaxAttributesPerEntity { get; set; } = 16;
-
-    /// <summary>Hard character budget for the serialized catalog block sent to the AI.</summary>
-    public int AiMetadataCatalogMaxChars { get; set; } = 12000;
 
     /// <summary>
     /// When true (default), load approved entity metadata from CRM/Mock in a background hosted service at startup

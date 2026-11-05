@@ -57,6 +57,14 @@ public sealed class CrmAiCatalogAttribute
     public bool Filterable { get; init; }
     public bool Sortable { get; init; }
     public bool Selectable { get; init; } = true;
+    /// <summary>Option labels/values when present on the discovered attribute (state/status/picklist).</summary>
+    public IReadOnlyList<CrmAiCatalogOption>? Options { get; set; }
+}
+
+public sealed class CrmAiCatalogOption
+{
+    public required int Value { get; init; }
+    public required string Label { get; init; }
 }
 
 public sealed class CrmAiCatalogRelationship
@@ -66,10 +74,12 @@ public sealed class CrmAiCatalogRelationship
     public required string ReferencingEntity { get; init; }
     public required string ReferencedEntity { get; init; }
     public string? ReferencingAttribute { get; init; }
+    public string? ReferencedAttribute { get; init; }
     /// <summary>Business-facing label for AI planning (never CRM record data).</summary>
     public string? DisplayName { get; init; }
     /// <summary>N:1, 1:N, or N:N relative to the detail entity.</summary>
     public string? Direction { get; init; }
+    public bool IsApproved { get; init; }
 }
 
 public sealed class CrmAiMetadataCatalogBuildResult
@@ -91,6 +101,6 @@ public sealed class CrmAiMetadataCatalogBuildResult
     public int IncludedRelationshipCount { get; init; }
     public int OriginalCharacterCount { get; init; }
     public int FinalCharacterCount { get; init; }
-    public int ConfiguredBudget { get; init; }
+    /// <summary>Always false in POC full-catalog mode (no application-level truncation).</summary>
     public bool TruncationApplied { get; init; }
 }

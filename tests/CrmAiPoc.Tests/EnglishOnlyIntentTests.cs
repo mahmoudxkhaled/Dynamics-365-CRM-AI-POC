@@ -72,7 +72,6 @@ public class EnglishOnlyIntentTests
 
         var attach = CrmRelationshipDiscovery.ResolveProposedLinks(
             plan, ComplexListQuestion, entities, policy, labeler, "en");
-        Assert.Null(attach.Pending);
         Assert.True(string.IsNullOrWhiteSpace(attach.ClarificationMessage), attach.ClarificationMessage);
         Assert.NotEmpty(attach.Plan.Links);
         Assert.Equal("account", attach.Plan.Links[0].Entity);

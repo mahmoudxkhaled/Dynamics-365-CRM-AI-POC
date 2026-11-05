@@ -206,11 +206,12 @@ public sealed class HybridResolutionAuditTests
             entities,
             policy,
             labeler);
-        Assert.NotNull(attach.Pending);
+        Assert.False(string.IsNullOrWhiteSpace(attach.ClarificationMessage));
+        Assert.Contains("Multiple approved relationships", attach.ClarificationMessage!, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Customer Account", attach.ClarificationMessage!, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Potential Customer", attach.ClarificationMessage!, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("te_account_salesorder_customeraccountid", attach.ClarificationMessage!);
-        Assert.DoesNotContain("order_customer_accounts", attach.ClarificationMessage!);
+        Assert.DoesNotContain("option number", attach.ClarificationMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Reply with", attach.ClarificationMessage!, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -162,7 +162,6 @@ public sealed class HybridEntityResolutionTests
             labeler);
 
         Assert.Null(attach.ClarificationMessage);
-        Assert.Null(attach.Pending);
         Assert.Single(attach.Plan.Links);
         Assert.Equal("account", attach.Plan.Links[0].Entity);
         Assert.Equal("contact_customer_accounts", attach.Plan.Links[0].Relationship);
@@ -188,7 +187,6 @@ public sealed class HybridEntityResolutionTests
             labeler);
 
         Assert.Null(attach.ClarificationMessage);
-        Assert.Null(attach.Pending);
         Assert.Single(attach.Plan.Links);
         Assert.Equal("te_account_salesorder_customeraccountid", attach.Plan.Links[0].Relationship);
     }
@@ -207,12 +205,11 @@ public sealed class HybridEntityResolutionTests
             labeler);
 
         Assert.Null(attach.ClarificationMessage);
-        Assert.Null(attach.Pending);
         Assert.Empty(attach.Plan.Links);
     }
 
     [Fact]
-    public void Clarification_Selection_By_Index_Resumes_Without_SchemaName_In_User_Text()
+    public void Ambiguous_Account_Link_Fails_Without_Pending_Resume_Or_Option_Menu()
     {
         var (policy, entities) = Create();
         var labeler = new CrmRelationshipLabeler(Options.Create(new CrmOptions()));
@@ -229,14 +226,13 @@ public sealed class HybridEntityResolutionTests
             entities,
             policy,
             labeler);
-        Assert.NotNull(attach.Pending);
 
-        Assert.True(CrmRelationshipDiscovery.TryMatchClarificationSelection(
-            "1", attach.Pending!, out var schema, out var err), err);
-        Assert.False(string.IsNullOrWhiteSpace(schema));
-        var resumed = CrmRelationshipDiscovery.AttachSelectedRelationship(attach.Pending!, schema, entities);
-        Assert.Single(resumed.Links);
-        Assert.Equal(schema, resumed.Links[0].Relationship);
+        Assert.False(string.IsNullOrWhiteSpace(attach.ClarificationMessage));
+        Assert.Contains("Multiple approved relationships", attach.ClarificationMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("option number", attach.ClarificationMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Reply with", attach.ClarificationMessage!, StringComparison.OrdinalIgnoreCase);
+        // Plan is not mutated into an executable join; caller must not resume it.
+        Assert.DoesNotContain(attach.Plan.Links, l => !string.IsNullOrWhiteSpace(l.Relationship));
     }
 
     [Fact]

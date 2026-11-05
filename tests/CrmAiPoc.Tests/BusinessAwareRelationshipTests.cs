@@ -91,7 +91,6 @@ public sealed class BusinessAwareRelationshipTests
             labeler);
 
         Assert.True(string.IsNullOrWhiteSpace(attach.ClarificationMessage), attach.ClarificationMessage);
-        Assert.Null(attach.Pending);
         Assert.Single(attach.Plan.Links);
         Assert.Equal("te_account_salesorder_customeraccountid", attach.Plan.Links[0].Relationship);
     }
@@ -106,8 +105,6 @@ public sealed class BusinessAwareRelationshipTests
             entities,
             policy,
             labeler);
-
-        Assert.Null(attach.Pending);
         Assert.Single(attach.Plan.Links);
         Assert.Equal("order_customer_accounts", attach.Plan.Links[0].Relationship);
     }
@@ -136,12 +133,12 @@ public sealed class BusinessAwareRelationshipTests
             policy,
             labeler);
 
-        Assert.NotNull(attach.Pending);
         Assert.False(string.IsNullOrWhiteSpace(attach.ClarificationMessage));
-        Assert.Contains("Which Account details", attach.ClarificationMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Multiple approved relationships", attach.ClarificationMessage!, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Customer Account", attach.ClarificationMessage!, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Branch Account", attach.ClarificationMessage!, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("te_account_salesorder", attach.ClarificationMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("option number", attach.ClarificationMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Reply with the option number", attach.ClarificationMessage!, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -180,8 +177,6 @@ public sealed class BusinessAwareRelationshipTests
             entities,
             policy,
             labeler);
-
-        Assert.Null(attach.Pending);
         Assert.True(string.IsNullOrWhiteSpace(attach.ClarificationMessage), attach.ClarificationMessage);
         Assert.Single(attach.Plan.Links);
         Assert.Equal("te_account_salesorder_customeraccountid", attach.Plan.Links[0].Relationship);
@@ -199,8 +194,6 @@ public sealed class BusinessAwareRelationshipTests
             entities,
             policy,
             labeler);
-
-        Assert.Null(attach.Pending);
         Assert.Empty(attach.Plan.Links);
     }
 }

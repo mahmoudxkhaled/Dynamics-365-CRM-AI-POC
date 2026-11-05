@@ -133,7 +133,6 @@ public sealed class AiQueryPlanAuthorityTests
             entities,
             policy,
             labeler);
-        Assert.Null(resolved.Pending);
         Assert.Equal("salesorder", resolved.Plan.Entity);
         Assert.Single(resolved.Plan.Links);
         Assert.Equal("account", resolved.Plan.Links[0].Entity);
@@ -175,7 +174,6 @@ public sealed class AiQueryPlanAuthorityTests
             entities,
             policy,
             labeler);
-        Assert.Null(resolved.Pending);
         Assert.True(string.IsNullOrWhiteSpace(resolved.ClarificationMessage), resolved.ClarificationMessage);
         Assert.Single(resolved.Plan.Links);
         Assert.False(string.IsNullOrWhiteSpace(resolved.Plan.Links[0].Relationship));
@@ -234,7 +232,6 @@ public sealed class AiQueryPlanAuthorityTests
         Assert.Equal(RelativeDateToken.Last6CalendarMonths, plan.RelativeDate!.Token);
 
         var resolved = CrmRelationshipDiscovery.ResolveProposedLinks(plan, "complex", entities, policy, labeler);
-        Assert.Null(resolved.Pending);
         Assert.Equal("te_account_salesorder_customeraccountid", resolved.Plan.Links[0].Relationship);
         Assert.Equal("account_primary_contact", resolved.Plan.Links[0].Links[0].Relationship);
     }

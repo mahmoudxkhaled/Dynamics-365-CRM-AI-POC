@@ -29,6 +29,9 @@ public sealed partial class ChatService
         - Include all requested filters, date ranges, select fields, sort, and limit in the tool call. Do not omit constraints the user asked for.
         - When related business data is requested, pass linksJson with related entity, purpose from catalog relationships labels, select fields, and joinType.
         - Prefer purpose/label matching the user's business wording.
+        - When multiple catalog relationships exist between the same entities, you MUST resolve the intended one before calling query_crm:
+          set relationship to the exact catalog schemaName, or use a purpose/label that uniquely identifies one catalog relationship.
+        - If relationship intent is still ambiguous, DO NOT call query_crm and DO NOT ask the user to reply with option numbers. Use clarification JSON with complete standalone questions instead.
         - Use relationship SchemaName only when copying an exact catalog schemaName value. Never invent SchemaNames.
         - Nested links max depth 2 / max 3 linked entities.
         - Do not invent CRM records. Never emit OData, SQL, FetchXML, or URLs.
@@ -43,6 +46,7 @@ public sealed partial class ChatService
         - entityLogicalName, attributeLogicalNames, and relationshipSchemaNames MUST come from the APPROVED_CRM_METADATA_CATALOG. Never invent fields or SchemaNames.
         - Prefer displayName values in the human-readable question text; keep logical names only in the JSON metadata fields.
         - Labels are short (for UI chips); questions are full sentences the user can submit unchanged.
+        - The backend does not resume partial query plans. Every clarification chip must be a full question the user can submit as a new independent request.
 
         Dates (preferred): relativeDateField=createdon|modifiedon plus dateRange object (or dateRangeJson).
         ALWAYS include kind. Canonical examples:
@@ -141,37 +145,6 @@ public sealed partial class ChatService
         if (LooksLikeWriteRequest(request.Message))
         {
             return CreateResponse(session, RefuseWrite(), outboundWasSafe: true);
-        }
-
-        // Resume a pending relationship clarification without re-interpreting via the LLM.
-        if (session.PendingRelationship is { } pending)
-        {
-            if (CrmRelationshipDiscovery.TryMatchClarificationSelection(
-                    request.Message.Trim(), pending, out var schemaName, out var selectionError))
-            {
-                session.ClearPendingRelationship();
-                var approved = await _metadata.GetApprovedEntitiesAsync(cancellationToken);
-                if (!pending.Options.Any(o =>
-                        o.SchemaName.Equals(schemaName, StringComparison.OrdinalIgnoreCase)))
-                {
-                    return CreateResponse(
-                        session,
-                        "That relationship selection is no longer valid. Please restate your question.",
-                        outboundWasSafe: true);
-                }
-
-                var resumed = CrmRelationshipDiscovery.AttachSelectedRelationship(
-                    pending, schemaName, approved);
-                return await ExecuteValidatedPlanAsync(
-                    session, resumed, outboundWasSafe: true, cancellationToken);
-            }
-
-            if (!string.IsNullOrWhiteSpace(selectionError))
-            {
-                return CreateResponse(session, selectionError, outboundWasSafe: true, selectedTool: "query_crm");
-            }
-
-            session.ClearPendingRelationship();
         }
 
         var userMessage = request.Message.Trim();
@@ -439,29 +412,10 @@ public sealed partial class ChatService
             approvedEntities,
             _approvalPolicy,
             _relationshipLabeler);
-        if (attach.Pending is not null)
-        {
-            session.SetPendingRelationship(attach.Pending);
-            return CreateResponse(
-                session,
-                attach.ClarificationMessage ?? "Please choose a relationship option.",
-                selectedTool: "query_crm",
-                outboundWasSafe: outboundWasSafe,
-                data: new
-                {
-                    clarification = "relationship",
-                    rootEntity = attach.Pending.RootEntity,
-                    relatedEntity = attach.Pending.RelatedEntity,
-                    options = attach.Pending.Options.Select(o => new
-                    {
-                        index = o.Index,
-                        description = o.Description
-                    })
-                });
-        }
-
         if (!string.IsNullOrWhiteSpace(attach.ClarificationMessage))
         {
+            // Ambiguous or invalid links: fail safely. Groq owns relationship clarification via
+            // complete-question chips; the backend never stores a pending plan for resume.
             return CreateResponse(
                 session,
                 attach.ClarificationMessage,

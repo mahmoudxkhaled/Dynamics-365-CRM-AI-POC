@@ -82,7 +82,10 @@ public sealed class CrmAiTools
         [Description(
             "JSON array of related-entity links: " +
             "[{entity, purpose?:businessLabel, relationship?:exactCatalogSchemaName, joinType?:outer|inner, alias?, select?:[fields], filters?:[{field,operator,value}], links?:[nested]}]. " +
-            "Prefer purpose from catalog rels[].lbl (e.g. Customer Account). Only set relationship when copying an exact catalog SchemaName — never invent SchemaNames. Nested links max depth 2.")]
+            "Prefer purpose from catalog rels[].lbl (e.g. Customer Account). " +
+            "When more than one approved relationship exists to the related entity, you MUST set relationship to the exact catalog SchemaName (or a purpose that uniquely identifies one). " +
+            "If still ambiguous, do not call this tool — return clarification JSON with complete standalone questions instead. " +
+            "Never invent SchemaNames. Nested links max depth 2.")]
         string? linksJson = null,
         CancellationToken cancellationToken = default)
     {

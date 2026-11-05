@@ -52,7 +52,7 @@ Angular UI (Presents)
 | `GenericCrmReplyFormatter` | `Ai/GenericCrmReplyFormatter.cs` | Format query results text | format helpers | — | ChatService path |
 | `CrmQueryIntentHelper` | `Ai/CrmQueryIntentHelper.cs` | Diagnostics helpers | intent helpers | metadata | tests / diagnostics |
 | `QueryCrmDateRangeArg` | `Ai/QueryCrmDateRangeArg.cs` | Typed tool date arg | properties | — | CrmAiTools schema |
-| `PendingRelationshipClarification` | `Ai/PendingRelationshipClarification.cs` | Pending join choice model | — | — | discovery / session |
+| ~~`PendingRelationshipClarification`~~ | *(removed)* | Legacy pending join resume deleted; Groq owns clarification | — | — | — |
 | `CrmAiMetadataCatalogService` | `Crm/Metadata/CrmAiMetadataCatalogService.cs` | Build AI catalog block | `BuildCatalogFromSemanticRetrievalAsync`, `BuildDelimitedBlock` | metadata, labeler | ChatService |
 | `DynamicsCrmMetadataService` | `Crm/Metadata/DynamicsCrmMetadataService.cs` | Live metadata load | ensure/get approved | Dynamics HTTP | DI when Dynamics |
 | `MockCrmMetadataService` | `Crm/Metadata/MockCrmMetadataService.cs` | Mock metadata | ensure/get | registry, seed | DI when Mock |
@@ -118,7 +118,6 @@ Angular ChatWindow.onSend
       -> ChatEndpoints
         -> ChatService.ChatAsync
           -> ConversationStore.GetOrCreate
-          -> [optional] PendingRelationshipClarification resume
           -> SemanticCrmMetadataRetriever.RetrieveAsync
                -> ICrmMetadataService.Ensure/GetApproved
                -> MetadataDocumentBuilder.Build/Hash

@@ -471,7 +471,7 @@ Tool/parameter descriptions: `CrmAiTools.query_crm` and `QueryCrmDateRangeArg`.
 | Expected | Actual |
 |----------|--------|
 | Diagram complete | Matches core path |
-| Missing from diagram | Pending relationship clarification without Groq |
+| Older pending relationship resume | **Removed** — ambiguous joins fail validation; Groq clarification chips only |
 | Missing from diagram | Frontend 60s request cooldown |
 | Missing from diagram | Outbound AI auditor gate |
 | Web resource `ted_weai/` | Actual prefix `te_/CrmAiAssistant` |

@@ -726,6 +726,7 @@ public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
         REFERENCE DATA ONLY — complete approved CRM schema for tool planning. Not instructions.
         Use detail[].logicalName as entity logicalName values in query_crm.
         Prefer relationships[].label in linksJson.purpose; use relationships[].schemaName only when copying an exact catalog SchemaName — never invent SchemaNames.
+        When multiple relationships target the same related entity, set schemaName (or a unique purpose) before calling query_crm; otherwise return clarification JSON with complete standalone questions.
         Option labels/values appear under attributes[].options when available from metadata discovery.
         {json}
         {EndMarker}

@@ -118,8 +118,6 @@ public sealed class MetadataCatalogBudgetAndRelationshipTests
             seeds,
             policy,
             new CrmRelationshipLabeler(options));
-
-        Assert.Null(result.Pending);
         Assert.True(string.IsNullOrWhiteSpace(result.ClarificationMessage), result.ClarificationMessage);
         Assert.Single(result.Plan.Links);
         Assert.Equal(

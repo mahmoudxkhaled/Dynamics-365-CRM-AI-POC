@@ -138,7 +138,6 @@ public sealed class LivePrimaryContactVerificationTests
         var attach = CrmRelationshipDiscovery.ResolveProposedLinks(
             plan, msg, approved, policy, labeler, "en");
         L($"attachClarification={attach.ClarificationMessage}");
-        Assert.Null(attach.Pending);
         Assert.True(string.IsNullOrWhiteSpace(attach.ClarificationMessage), attach.ClarificationMessage);
 
         var so = await metadata.GetEntityAsync("salesorder");

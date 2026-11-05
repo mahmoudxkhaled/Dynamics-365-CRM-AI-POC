@@ -91,7 +91,6 @@ public sealed class PrimaryEntityAndPrimaryContactTests
             plan, msg, entities, policy, labeler, "en");
 
         Assert.Null(attach.ClarificationMessage);
-        Assert.Null(attach.Pending);
         Assert.Single(attach.Plan.Links);
         Assert.Equal("account", attach.Plan.Links[0].Entity);
         Assert.Equal("te_account_salesorder_customeraccountid", attach.Plan.Links[0].Relationship);

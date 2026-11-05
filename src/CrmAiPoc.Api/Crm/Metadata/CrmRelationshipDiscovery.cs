@@ -1,4 +1,3 @@
-using CrmAiPoc.Api.Ai;
 using CrmAiPoc.Api.Crm.Generic;
 
 namespace CrmAiPoc.Api.Crm.Metadata;
@@ -38,8 +37,12 @@ public static class CrmRelationshipDiscovery
     public sealed class AutoAttachResult
     {
         public required CrmQueryPlan Plan { get; init; }
+
+        /// <summary>
+        /// Validation error when links cannot be resolved uniquely.
+        /// Never a pending-session menu; Groq owns semantic clarification.
+        /// </summary>
         public string? ClarificationMessage { get; init; }
-        public PendingRelationshipClarification? Pending { get; init; }
     }
 
     public static PathResult FindUniquePath(
@@ -102,7 +105,7 @@ public static class CrmRelationshipDiscovery
         {
             var resolved = ResolveOneLink(
                 plan, root, link, userMessage, approvedEntities, labeler, languageHint);
-            if (resolved.Pending is not null || !string.IsNullOrWhiteSpace(resolved.ClarificationMessage))
+            if (!string.IsNullOrWhiteSpace(resolved.ClarificationMessage))
             {
                 return resolved;
             }
@@ -135,6 +138,7 @@ public static class CrmRelationshipDiscovery
         CrmRelationshipLabeler labeler,
         string languageHint)
     {
+        _ = languageHint;
         var related = approvedEntities.FirstOrDefault(e =>
             e.LogicalName.Equals(link.Entity, StringComparison.OrdinalIgnoreCase));
         if (related is null)
@@ -148,14 +152,13 @@ public static class CrmRelationshipDiscovery
         }
 
         var resolve = ResolveSchemaName(
-            fromEntity, related, link, userMessage, labeler, languageHint);
-        if (resolve.Pending is not null || !string.IsNullOrWhiteSpace(resolve.ClarificationMessage))
+            fromEntity, related, link, userMessage, labeler);
+        if (!string.IsNullOrWhiteSpace(resolve.ClarificationMessage))
         {
             return new AutoAttachResult
             {
                 Plan = plan,
-                ClarificationMessage = resolve.ClarificationMessage,
-                Pending = resolve.Pending
+                ClarificationMessage = resolve.ClarificationMessage
             };
         }
 
@@ -168,8 +171,7 @@ public static class CrmRelationshipDiscovery
             {
                 var childResult = ResolveOneLink(
                     plan, related, child, userMessage, approvedEntities, labeler, languageHint);
-                if (childResult.Pending is not null ||
-                    !string.IsNullOrWhiteSpace(childResult.ClarificationMessage))
+                if (!string.IsNullOrWhiteSpace(childResult.ClarificationMessage))
                 {
                     return childResult;
                 }
@@ -211,8 +213,7 @@ public static class CrmRelationshipDiscovery
         CrmEntityMetadata related,
         CrmLinkSpec link,
         string? userMessage,
-        CrmRelationshipLabeler labeler,
-        string languageHint)
+        CrmRelationshipLabeler labeler)
     {
         var candidates = CollectCandidates(fromEntity, related);
         if (candidates.Count == 0)
@@ -252,18 +253,10 @@ public static class CrmRelationshipDiscovery
 
             if (byPurpose.Count > 1)
             {
-                var ambiguous = BuildAmbiguousClarification(
-                    new CrmQueryPlan { Entity = fromEntity.LogicalName, Links = [link] },
-                    fromEntity,
-                    related,
-                    byPurpose,
-                    CombineContext(userMessage, purposeHint),
-                    labeler,
-                    languageHint);
                 return new SchemaResolveResult
                 {
-                    ClarificationMessage = ambiguous.ClarificationMessage,
-                    Pending = ambiguous.Pending
+                    ClarificationMessage = AmbiguousRelationshipError(
+                        fromEntity, related, byPurpose, labeler)
                 };
             }
 
@@ -284,18 +277,10 @@ public static class CrmRelationshipDiscovery
 
             if (byPurpose.Count > 1)
             {
-                var ambiguous = BuildAmbiguousClarification(
-                    new CrmQueryPlan { Entity = fromEntity.LogicalName, Links = [link] },
-                    fromEntity,
-                    related,
-                    byPurpose,
-                    CombineContext(userMessage, link.RelationshipPurpose),
-                    labeler,
-                    languageHint);
                 return new SchemaResolveResult
                 {
-                    ClarificationMessage = ambiguous.ClarificationMessage,
-                    Pending = ambiguous.Pending
+                    ClarificationMessage = AmbiguousRelationshipError(
+                        fromEntity, related, byPurpose, labeler)
                 };
             }
 
@@ -305,18 +290,10 @@ public static class CrmRelationshipDiscovery
         var path = FindUniquePath(fromEntity, related, userMessage, labeler);
         if (path.Ambiguous)
         {
-            var ambiguous = BuildAmbiguousClarification(
-                new CrmQueryPlan { Entity = fromEntity.LogicalName, Links = [link] },
-                fromEntity,
-                related,
-                path.Candidates,
-                userMessage,
-                labeler,
-                languageHint);
             return new SchemaResolveResult
             {
-                ClarificationMessage = ambiguous.ClarificationMessage,
-                Pending = ambiguous.Pending
+                ClarificationMessage = AmbiguousRelationshipError(
+                    fromEntity, related, path.Candidates, labeler)
             };
         }
 
@@ -368,46 +345,33 @@ public static class CrmRelationshipDiscovery
     {
         public string? SchemaName { get; init; }
         public string? ClarificationMessage { get; init; }
-        public PendingRelationshipClarification? Pending { get; init; }
     }
 
-    private static AutoAttachResult BuildAmbiguousClarification(
-        CrmQueryPlan plan,
-        CrmEntityMetadata root,
+    /// <summary>
+    /// Fail-safe validation message for ambiguous joins. Does not create pending session state
+    /// or numeric option menus — Groq must clarify with complete standalone questions.
+    /// </summary>
+    private static string AmbiguousRelationshipError(
+        CrmEntityMetadata fromEntity,
         CrmEntityMetadata related,
         IReadOnlyList<CrmRelationshipMetadata> candidates,
-        string? userMessage,
-        CrmRelationshipLabeler labeler,
-        string languageHint)
+        CrmRelationshipLabeler labeler)
     {
-        var options = candidates
-            .Select((c, i) => new RelationshipClarificationOption
-            {
-                Index = i + 1,
-                SchemaName = c.SchemaName,
-                Description = labeler.Describe(c, root)
-            })
+        var labels = candidates
+            .Select(c => labeler.Describe(c, fromEntity))
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        _ = languageHint;
-        var lines = options.Select(o => $"{o.Index}) {o.Description}");
-        var message =
-            $"Which {Friendly(related.LogicalName)} details should I include for these {Friendly(root.LogicalName)} records? Reply with the option number:\n" +
-            string.Join("\n", lines);
+        var candidateText = labels.Length > 0
+            ? string.Join("; ", labels)
+            : string.Join("; ", candidates.Select(c => c.SchemaName));
 
-        return new AutoAttachResult
-        {
-            Plan = plan,
-            ClarificationMessage = message,
-            Pending = new PendingRelationshipClarification
-            {
-                Plan = plan,
-                RootEntity = root.LogicalName,
-                RelatedEntity = related.LogicalName,
-                OriginalUserMessage = userMessage ?? string.Empty,
-                Options = options
-            }
-        };
+        return
+            $"Multiple approved relationships exist between {Friendly(fromEntity.LogicalName)} and {Friendly(related.LogicalName)}. " +
+            "Please restate the question with a specific relationship purpose, " +
+            "or ensure the query plan includes an exact catalog relationship SchemaName. " +
+            $"Candidates: {candidateText}.";
     }
 
     /// <summary>
@@ -766,83 +730,6 @@ public static class CrmRelationshipDiscovery
         return norm.Contains("primary contact", StringComparison.Ordinal) ||
                norm.Contains("primarycontact", StringComparison.Ordinal) ||
                userMessage.Contains("Primary Contact", StringComparison.OrdinalIgnoreCase);
-    }
-
-    public static CrmQueryPlan AttachSelectedRelationship(
-        PendingRelationshipClarification pending,
-        string schemaName,
-        IReadOnlyList<CrmEntityMetadata> approvedEntities)
-    {
-        var related = approvedEntities.FirstOrDefault(e =>
-            e.LogicalName.Equals(pending.RelatedEntity, StringComparison.OrdinalIgnoreCase));
-        var select = related is not null && !string.IsNullOrWhiteSpace(related.PrimaryNameAttribute)
-            ? new[] { related.PrimaryNameAttribute }
-            : Array.Empty<string>();
-
-        return CloneWithLinks(
-            pending.Plan,
-            [
-                new CrmLinkSpec
-                {
-                    Entity = pending.RelatedEntity,
-                    Relationship = schemaName,
-                    JoinType = CrmLinkJoinType.Outer,
-                    Select = select
-                }
-            ]);
-    }
-
-    public static bool TryMatchClarificationSelection(
-        string userMessage,
-        PendingRelationshipClarification pending,
-        out string schemaName,
-        out string? error)
-    {
-        schemaName = string.Empty;
-        error = null;
-        if (string.IsNullOrWhiteSpace(userMessage) || pending.Options.Count == 0)
-        {
-            error = "No pending relationship options.";
-            return false;
-        }
-
-        var text = userMessage.Trim();
-        if (int.TryParse(text, out var index))
-        {
-            var byIndex = pending.Options.FirstOrDefault(o => o.Index == index);
-            if (byIndex is not null)
-            {
-                schemaName = byIndex.SchemaName;
-                return true;
-            }
-
-            error = $"Option {index} is not available. Choose 1–{pending.Options.Count}.";
-            return false;
-        }
-
-        // Match by friendly description (case-insensitive contains / equals).
-        var matches = pending.Options
-            .Where(o =>
-                o.Description.Equals(text, StringComparison.OrdinalIgnoreCase) ||
-                o.Description.Contains(text, StringComparison.OrdinalIgnoreCase) ||
-                text.Contains(o.Description, StringComparison.OrdinalIgnoreCase) ||
-                o.SchemaName.Equals(text, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        if (matches.Count == 1)
-        {
-            schemaName = matches[0].SchemaName;
-            return true;
-        }
-
-        if (matches.Count > 1)
-        {
-            error = "That selection matches multiple relationships. Reply with the option number.";
-            return false;
-        }
-
-        error = null; // not a selection — caller continues normal chat
-        return false;
     }
 
     private static CrmQueryPlan CloneWithLinks(CrmQueryPlan plan, IReadOnlyList<CrmLinkSpec> links) =>

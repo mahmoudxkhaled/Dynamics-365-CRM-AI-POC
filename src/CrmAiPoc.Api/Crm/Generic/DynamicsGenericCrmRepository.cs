@@ -113,7 +113,7 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
 
         _http.EnsureLiveConfigured();
         _logger.LogInformation(
-            "query_crm FetchXML prepared. Entity={Entity}, Operation={Operation}, Limit={Limit}, FetchLength={FetchLength}",
+            "[FETCHXML] Entity={Entity} Operation={Operation} Limit={Limit} FetchLength={FetchLength}",
             logical,
             built.Operation,
             built.Limit,

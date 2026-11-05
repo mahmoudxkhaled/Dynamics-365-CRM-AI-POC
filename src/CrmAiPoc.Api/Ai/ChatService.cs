@@ -11,16 +11,6 @@ namespace CrmAiPoc.Api.Ai;
 
 public sealed partial class ChatService
 {
-    private static readonly string Stage1SystemPrompt = """
-        You select which approved Dynamics 365 CRM entities are required to answer the user's question.
-        Use English only.
-        You do not query CRM data and you must not call tools.
-        Respond with JSON only in this exact shape: {"selectedEntities":["logicalname"]}
-        selectedEntities may contain one or more logicalName values copied exactly from the approved entity index.
-        Include every approved entity needed for the question, including related entities when joins are required.
-        Do not invent logical names. Do not include attributes, relationships, explanations, or markdown outside the JSON object.
-        """;
-
     private static readonly string SystemPrompt = """
         You are a read-only Dynamics 365 CRM query planner for Sales and Marketing users.
         Use English only for all interactions and responses.
@@ -172,100 +162,18 @@ public sealed partial class ChatService
         var userMessage = request.Message.Trim();
         var correlationId = Guid.NewGuid().ToString("N")[..12];
 
-        // -------- Stage 1: AI entity selection (index only; no query_crm; no CRM records) --------
-        var entityIndex = await _metadataCatalog.BuildApprovedEntitySelectionIndexAsync(cancellationToken);
-        if (!entityIndex.Success || string.IsNullOrWhiteSpace(entityIndex.FormattedBlock))
-        {
-            _logger.LogWarning(
-                "Refusing AI planning because Stage 1 entity index failed: {Error}",
-                entityIndex.Error);
-            return CreateResponse(
-                session,
-                "I cannot plan this CRM question because the approved entity index could not be prepared. " +
-                "Please retry shortly or contact support if this persists.",
-                outboundWasSafe: true);
-        }
-
-        var stage1History = BuildStage1History(userMessage, entityIndex);
-        var stage1Audit = OutboundAiPayloadAuditor.Audit(stage1History);
-        if (!stage1Audit.SafeForLiveCrm)
-        {
-            throw new InvalidOperationException(
-                "Refusing Stage 1 AI call because the outbound payload appears to contain CRM tool results or record text.");
-        }
-
-        LogStage1Request(correlationId, userMessage, entityIndex);
-
-        ChatResponse stage1Response;
-        var stage1Started = DateTimeOffset.UtcNow;
-        try
-        {
-            stage1Response = await GetResponseWithRetryAsync(
-                stage1History,
-                new ChatOptions { Temperature = 0.1f },
-                cancellationToken);
-        }
-        catch (Exception ex) when (IsProviderLimitOrTransportFailure(ex))
-        {
-            _logger.LogError(
-                ex,
-                "[AI STAGE 1 ERROR] CorrelationId={CorrelationId} PayloadChars={PayloadChars} Message={Message}",
-                correlationId,
-                entityIndex.CharacterCount,
-                ex.Message);
-            return CreateResponse(
-                session,
-                $"Stage 1 AI provider rejected the request (payload chars={entityIndex.CharacterCount}): {ex.Message}",
-                outboundWasSafe: stage1Audit.SafeForLiveCrm);
-        }
-        catch (Exception ex) when (ex is OperationCanceledException or TimeoutException or HttpRequestException
-                                   || ex.GetType().Name.Contains("ClientResult", StringComparison.Ordinal)
-                                   || ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
-                                   || ex.Message.Contains("canceled", StringComparison.OrdinalIgnoreCase)
-                                   || ex.Message.Contains("cancelled", StringComparison.OrdinalIgnoreCase))
-        {
-            _logger.LogWarning(ex, "[AI STAGE 1 ERROR] CorrelationId={CorrelationId} timed out/failed.", correlationId);
-            return CreateResponse(
-                session,
-                "Stage 1 AI entity selection did not respond in time. Please retry your question.",
-                outboundWasSafe: stage1Audit.SafeForLiveCrm);
-        }
-
-        var stage1DurationMs = (long)(DateTimeOffset.UtcNow - stage1Started).TotalMilliseconds;
-        var stage1Parsed = AiEntitySelectionParser.Parse(stage1Response.Text);
-        LogStage1Response(correlationId, stage1Parsed, stage1DurationMs);
-
-        if (!stage1Parsed.Success)
-        {
-            return CreateResponse(
-                session,
-                stage1Parsed.Error ?? "Stage 1 entity selection failed.",
-                outboundWasSafe: stage1Audit.SafeForLiveCrm);
-        }
-
-        var validatedSelection = ValidateStage1Selection(stage1Parsed.SelectedEntities);
-        if (!validatedSelection.Success)
-        {
-            return CreateResponse(
-                session,
-                validatedSelection.Error ?? "Stage 1 selected entities are not approved.",
-                outboundWasSafe: stage1Audit.SafeForLiveCrm);
-        }
-
-        // -------- Stage 2: full metadata for selected entities + query_crm planning --------
-        var catalog = await _metadataCatalog.BuildApprovedCatalogForSelectedEntitiesAsync(
-            validatedSelection.SelectedEntities,
-            cancellationToken);
+        // Single-stage: full approved metadata catalog + user question + query_crm → one Groq call.
+        var catalog = await _metadataCatalog.BuildApprovedCatalogAsync(userMessage, cancellationToken);
         if (_crmOptions.AllowSendApprovedMetadataCatalogToAi && !catalog.Success)
         {
             _logger.LogWarning(
-                "Refusing Stage 2 because metadata catalog construction failed: {Error}",
+                "Refusing AI planning because metadata catalog construction failed: {Error}",
                 catalog.Error);
             return CreateResponse(
                 session,
-                "I cannot plan this CRM question safely because the selected entity metadata catalog could not be prepared. " +
+                "I cannot plan this CRM question safely because the approved metadata catalog could not be prepared. " +
                 "Please retry shortly or contact support if this persists.",
-                outboundWasSafe: stage1Audit.SafeForLiveCrm);
+                outboundWasSafe: true);
         }
 
         var outboundHistory = BuildOutboundHistory(userMessage, catalog);
@@ -273,7 +181,7 @@ public sealed partial class ChatService
         if (!audit.SafeForLiveCrm)
         {
             throw new InvalidOperationException(
-                "Refusing Stage 2 AI call because the outbound payload appears to contain CRM tool results or record text.");
+                "Refusing to call the AI provider because the outbound payload appears to contain CRM tool results or record text.");
         }
 
         var queryCrmTool = AIFunctionFactory.Create(_tools.query_crm);
@@ -283,7 +191,7 @@ public sealed partial class ChatService
             Temperature = 0.1f
         };
 
-        LogStage2Request(correlationId, userMessage, validatedSelection.SelectedEntities, catalog);
+        LogAiRequest(correlationId, userMessage, catalog, outboundHistory);
 
         ChatResponse modelResponse;
         try
@@ -294,13 +202,13 @@ public sealed partial class ChatService
         {
             _logger.LogError(
                 ex,
-                "[AI STAGE 2 ERROR] CorrelationId={CorrelationId} MetadataPayloadSize={MetadataPayloadSize} Message={Message}",
+                "[AI ERROR] CorrelationId={CorrelationId} MetadataPayloadSize={MetadataPayloadSize} Message={Message}",
                 correlationId,
                 catalog.CharacterCount,
                 ex.Message);
             return CreateResponse(
                 session,
-                $"Stage 2 AI provider rejected the request (payload chars={catalog.CharacterCount}): {ex.Message}",
+                $"The AI provider rejected or failed the request (payload chars={catalog.CharacterCount}): {ex.Message}",
                 outboundWasSafe: audit.SafeForLiveCrm);
         }
         catch (Exception ex) when (ex is OperationCanceledException or TimeoutException or HttpRequestException
@@ -311,12 +219,12 @@ public sealed partial class ChatService
         {
             _logger.LogWarning(
                 ex,
-                "[AI STAGE 2 ERROR] CorrelationId={CorrelationId} timed out/failed; MetadataPayloadSize={MetadataPayloadSize}.",
+                "[AI ERROR] CorrelationId={CorrelationId} timed out/failed; MetadataPayloadSize={MetadataPayloadSize}.",
                 correlationId,
                 catalog.CharacterCount);
             return CreateResponse(
                 session,
-                "Stage 2 AI query planning did not respond in time. Please retry your question.",
+                "The AI planner did not respond in time. Please retry your question.",
                 outboundWasSafe: audit.SafeForLiveCrm);
         }
 
@@ -324,27 +232,19 @@ public sealed partial class ChatService
             .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
             .ToList();
 
+        LogAiResponse(correlationId, modelResponse, functionCalls);
+
         if (functionCalls.Count == 0)
         {
             var text = LocalCrmReplyFormatter.FormatRefusalOrText(modelResponse.Text, "en");
-            _logger.LogInformation(
-                "[AI STAGE 2 RESPONSE] CorrelationId={CorrelationId} RawToolArguments=(none) Text={Text}",
-                correlationId,
-                TruncateForLog(text, 800));
             return CreateResponse(session, text, outboundWasSafe: audit.SafeForLiveCrm);
         }
 
         var call = functionCalls[0];
-        var rawArgs = FormatToolArguments(call.Arguments);
-        _logger.LogInformation(
-            "[AI STAGE 2 RESPONSE] CorrelationId={CorrelationId} RawToolArguments={RawToolArguments}",
-            correlationId,
-            rawArgs);
-
         if (string.Equals(call.Name, "query_crm", StringComparison.OrdinalIgnoreCase))
         {
             return await HandleQueryCrmAsync(
-                session, call, userMessage, audit.SafeForLiveCrm, cancellationToken);
+                session, call, userMessage, correlationId, audit.SafeForLiveCrm, cancellationToken);
         }
 
         return CreateResponse(
@@ -358,6 +258,7 @@ public sealed partial class ChatService
         ConversationSession session,
         FunctionCallContent call,
         string userMessage,
+        string correlationId,
         bool outboundWasSafe,
         CancellationToken cancellationToken)
     {
@@ -419,8 +320,21 @@ public sealed partial class ChatService
                 outboundWasSafe: outboundWasSafe);
         }
 
+        _logger.LogInformation(
+            "[QUERY PLAN] CorrelationId={CorrelationId} Entity={Entity} Operation={Operation} Limit={Limit} " +
+            "SelectCount={SelectCount} FilterCount={FilterCount} LinkCount={LinkCount} AggregateCount={AggregateCount} Arguments={Arguments}",
+            correlationId,
+            attach.Plan.Entity,
+            attach.Plan.Operation,
+            attach.Plan.Limit,
+            attach.Plan.Select.Count,
+            attach.Plan.Filters.Count,
+            attach.Plan.Links.Count,
+            attach.Plan.Aggregates.Count,
+            FormatToolArguments(call.Arguments));
+
         return await ExecuteValidatedPlanAsync(
-            session, attach.Plan, outboundWasSafe, cancellationToken);
+            session, attach.Plan, correlationId, outboundWasSafe, cancellationToken);
     }
 
     private bool TryCanonicalizeApprovedEntity(string? proposed, out string canonical, out string? error)
@@ -456,6 +370,14 @@ public sealed partial class ChatService
         ConversationSession session,
         CrmQueryPlan plan,
         bool outboundWasSafe,
+        CancellationToken cancellationToken) =>
+        await ExecuteValidatedPlanAsync(session, plan, correlationId: "n/a", outboundWasSafe, cancellationToken);
+
+    private async Task<ChatResponseDto> ExecuteValidatedPlanAsync(
+        ConversationSession session,
+        CrmQueryPlan plan,
+        string correlationId,
+        bool outboundWasSafe,
         CancellationToken cancellationToken)
     {
         Guid? whoAmIUserId = null;
@@ -490,6 +412,16 @@ public sealed partial class ChatService
                 outboundWasSafe: outboundWasSafe);
         }
 
+        if (!string.IsNullOrWhiteSpace(result.RelativeRequestUri))
+        {
+            _logger.LogInformation(
+                "[FETCHXML] CorrelationId={CorrelationId} Entity={Entity} Operation={Operation} UriMarker={UriMarker}",
+                correlationId,
+                result.Entity,
+                result.Operation,
+                TruncateForLog(result.RelativeRequestUri, 500));
+        }
+
         if (!string.IsNullOrWhiteSpace(result.Message) &&
             string.IsNullOrWhiteSpace(result.RelativeRequestUri) &&
             result.Items.Count == 0 &&
@@ -500,10 +432,12 @@ public sealed partial class ChatService
 
         var reply = GenericCrmReplyFormatter.Format(result, "en", whoAmIUserId);
         _logger.LogInformation(
-            "query_crm complete: entity={Entity}, operation={Operation}, rows={Rows}",
+            "[CRM RESPONSE] CorrelationId={CorrelationId} Entity={Entity} Operation={Operation} Rows={Rows} Provider={Provider}",
+            correlationId,
             result.Entity,
             result.Operation,
-            result.Items.Count);
+            result.Items.Count,
+            result.ProviderName);
 
         return CreateResponse(
             session,
@@ -535,18 +469,6 @@ public sealed partial class ChatService
             crmProvider: result.ProviderName);
     }
 
-    internal static List<ChatMessage> BuildStage1History(
-        string newUserMessage,
-        CrmAiEntitySelectionIndexBuildResult entityIndex)
-    {
-        return
-        [
-            new ChatMessage(ChatRole.System, Stage1SystemPrompt),
-            new ChatMessage(ChatRole.System, entityIndex.FormattedBlock),
-            new ChatMessage(ChatRole.User, newUserMessage)
-        ];
-    }
-
     internal static List<ChatMessage> BuildOutboundHistory(
         string newUserMessage,
         CrmAiMetadataCatalogBuildResult? catalog = null)
@@ -566,114 +488,73 @@ public sealed partial class ChatService
         return messages;
     }
 
-    private (bool Success, string? Error, IReadOnlyList<string> SelectedEntities) ValidateStage1Selection(
-        IReadOnlyList<string> selected)
-    {
-        var approved = new List<string>();
-        var rejected = new List<string>();
-        foreach (var name in selected)
-        {
-            if (_approvalPolicy.IsApproved(name))
-            {
-                var canonical = _approvalPolicy.ApprovedLogicalNames
-                    .First(n => n.Equals(name, StringComparison.OrdinalIgnoreCase));
-                if (!approved.Contains(canonical, StringComparer.OrdinalIgnoreCase))
-                {
-                    approved.Add(canonical);
-                }
-            }
-            else
-            {
-                rejected.Add(name);
-            }
-        }
-
-        if (rejected.Count > 0)
-        {
-            return (
-                false,
-                $"Stage 1 selected unapproved entit{(rejected.Count == 1 ? "y" : "ies")}: {string.Join(", ", rejected)}. " +
-                $"Approved: {string.Join(", ", _approvalPolicy.ApprovedLogicalNames)}.",
-                Array.Empty<string>());
-        }
-
-        if (approved.Count == 0)
-        {
-            return (false, "Stage 1 did not select any approved entities.", Array.Empty<string>());
-        }
-
-        return (true, null, approved);
-    }
-
-    private void LogStage1Request(
+    private void LogAiRequest(
         string correlationId,
         string userMessage,
-        CrmAiEntitySelectionIndexBuildResult entityIndex)
+        CrmAiMetadataCatalogBuildResult catalog,
+        IReadOnlyList<ChatMessage> outboundHistory)
     {
         _logger.LogInformation(
-            "[AI STAGE 1 REQUEST] CorrelationId={CorrelationId} OriginalQuestion={OriginalQuestion} " +
-            "ApprovedEntityCount={ApprovedEntityCount} EntityIndexSentToAi={EntityIndexSentToAi}",
+            "[AI REQUEST] CorrelationId={CorrelationId} OriginalQuestion={OriginalQuestion} " +
+            "MetadataEntityCount={MetadataEntityCount} MetadataAttributeCount={MetadataAttributeCount} " +
+            "MetadataRelationshipCount={MetadataRelationshipCount} MetadataPayloadChars={MetadataPayloadChars} " +
+            "OutboundMessageCount={OutboundMessageCount} HasCatalog={HasCatalog} HasQueryCrmTool=true",
             correlationId,
             TruncateForLog(userMessage, 500),
-            entityIndex.ApprovedEntityCount,
-            entityIndex.FormattedBlock);
-
-        if (IsDevelopmentEnvironment())
-        {
-            var path = Path.Combine(Path.GetTempPath(), "crm-poc-ai-stage1-entity-index.txt");
-            File.WriteAllText(path, entityIndex.FormattedBlock);
-            _logger.LogInformation(
-                "[AI STAGE 1 REQUEST] CorrelationId={CorrelationId} EntityIndexDumpPath={Path}",
-                correlationId,
-                path);
-        }
-    }
-
-    private void LogStage1Response(
-        string correlationId,
-        AiEntitySelectionParser.Result parsed,
-        long durationMs)
-    {
-        _logger.LogInformation(
-            "[AI STAGE 1 RESPONSE] CorrelationId={CorrelationId} SelectedEntities={SelectedEntities} " +
-            "RawAiResponse={RawAiResponse} DurationMs={DurationMs} Success={Success} Error={Error}",
-            correlationId,
-            parsed.SelectedEntities.Count == 0 ? "(none)" : string.Join(",", parsed.SelectedEntities),
-            TruncateForLog(parsed.RawText, 2000),
-            durationMs,
-            parsed.Success,
-            parsed.Error ?? "(none)");
-    }
-
-    private void LogStage2Request(
-        string correlationId,
-        string userMessage,
-        IReadOnlyList<string> selectedEntities,
-        CrmAiMetadataCatalogBuildResult catalog)
-    {
-        _logger.LogInformation(
-            "[AI STAGE 2 REQUEST] CorrelationId={CorrelationId} OriginalQuestion={OriginalQuestion} " +
-            "SelectedEntities={SelectedEntities} MetadataEntityCount={MetadataEntityCount} " +
-            "MetadataAttributeCount={MetadataAttributeCount} MetadataRelationshipCount={MetadataRelationshipCount} " +
-            "MetadataPayloadChars={MetadataPayloadChars} FullMetadataSentToAi={FullMetadataSentToAi}",
-            correlationId,
-            TruncateForLog(userMessage, 500),
-            string.Join(",", selectedEntities),
             catalog.IncludedEntityCount,
             catalog.IncludedAttributeCount,
             catalog.IncludedRelationshipCount,
             catalog.CharacterCount,
-            catalog.FormattedBlock);
+            outboundHistory.Count,
+            catalog is { Enabled: true, Success: true } && !string.IsNullOrWhiteSpace(catalog.FormattedBlock));
 
         if (IsDevelopmentEnvironment() && !string.IsNullOrWhiteSpace(catalog.FormattedBlock))
         {
-            var path = Path.Combine(Path.GetTempPath(), "crm-poc-ai-stage2-metadata-catalog.txt");
+            var path = Path.Combine(Path.GetTempPath(), "crm-poc-ai-request-metadata-catalog.txt");
             File.WriteAllText(path, catalog.FormattedBlock);
             _logger.LogInformation(
-                "[AI STAGE 2 REQUEST] CorrelationId={CorrelationId} MetadataDumpPath={Path}",
+                "[AI REQUEST] CorrelationId={CorrelationId} MetadataDumpPath={Path}",
                 correlationId,
                 path);
         }
+    }
+
+    private void LogAiResponse(
+        string correlationId,
+        ChatResponse modelResponse,
+        IReadOnlyList<FunctionCallContent> functionCalls)
+    {
+        var usage = modelResponse.Usage;
+        var inputTokens = usage?.InputTokenCount;
+        var outputTokens = usage?.OutputTokenCount;
+        var totalTokens = usage?.TotalTokenCount;
+
+        if (functionCalls.Count == 0)
+        {
+            _logger.LogInformation(
+                "[AI RESPONSE] CorrelationId={CorrelationId} ToolCall=(none) Text={Text} " +
+                "InputTokenCount={InputTokenCount} OutputTokenCount={OutputTokenCount} TotalTokenCount={TotalTokenCount}",
+                correlationId,
+                TruncateForLog(modelResponse.Text, 800),
+                inputTokens,
+                outputTokens,
+                totalTokens);
+            return;
+        }
+
+        var call = functionCalls[0];
+        _logger.LogInformation(
+            "[AI RESPONSE] CorrelationId={CorrelationId} ToolName={ToolName} Entity={Entity} Operation={Operation} " +
+            "RawToolArguments={RawToolArguments} InputTokenCount={InputTokenCount} OutputTokenCount={OutputTokenCount} " +
+            "TotalTokenCount={TotalTokenCount}",
+            correlationId,
+            call.Name,
+            GetArgValue(call.Arguments, "entity"),
+            GetArgValue(call.Arguments, "operation"),
+            FormatToolArguments(call.Arguments),
+            inputTokens,
+            outputTokens,
+            totalTokens);
     }
 
     private static bool IsDevelopmentEnvironment() =>

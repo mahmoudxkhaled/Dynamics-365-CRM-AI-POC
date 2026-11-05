@@ -104,28 +104,3 @@ public sealed class CrmAiMetadataCatalogBuildResult
     /// <summary>Always false in POC full-catalog mode (no application-level truncation).</summary>
     public bool TruncationApplied { get; init; }
 }
-
-/// <summary>Stage 1 approved-entity index entry (no attributes/relationships).</summary>
-public sealed class CrmAiEntitySelectionIndexEntry
-{
-    public required string LogicalName { get; init; }
-    public string? DisplayName { get; init; }
-    /// <summary>
-    /// Entity description from CRM metadata when available.
-    /// Current discovery does not populate Description; remains null until that field exists.
-    /// </summary>
-    public string? Description { get; init; }
-}
-
-public sealed class CrmAiEntitySelectionIndexBuildResult
-{
-    public bool Enabled { get; init; }
-    public bool Success { get; init; }
-    public string? Error { get; init; }
-    public IReadOnlyList<CrmAiEntitySelectionIndexEntry> Entities { get; init; } =
-        Array.Empty<CrmAiEntitySelectionIndexEntry>();
-    public string FormattedBlock { get; init; } = string.Empty;
-    public int ApprovedEntityCount { get; init; }
-    public int CharacterCount { get; init; }
-    public string Source { get; init; } = "Unknown";
-}

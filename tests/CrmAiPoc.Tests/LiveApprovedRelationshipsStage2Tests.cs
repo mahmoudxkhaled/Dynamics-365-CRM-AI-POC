@@ -188,19 +188,20 @@ public sealed class LiveApprovedRelationshipsStage2Tests
         var readableAttrs = productMeta.Attributes.Count(a => a.IsValidForRead);
 
         var catalog = provider.GetRequiredService<ICrmAiMetadataCatalogService>();
-        var stage2 = await catalog.BuildApprovedCatalogForSelectedEntitiesAsync(["product"]);
-        Assert.True(stage2.Success, stage2.Error);
-        var detail = Assert.Single(stage2.Catalog.Detail);
-        Assert.Equal("product", detail.LogicalName, ignoreCase: true);
+        var built = await catalog.BuildApprovedCatalogAsync();
+        Assert.True(built.Success, built.Error);
+        var detail = Assert.Single(
+            built.Catalog.Detail,
+            e => e.LogicalName.Equals("product", StringComparison.OrdinalIgnoreCase));
 
         L($"ProductDiscoveredAttributes={readableAttrs}");
         L($"ProductSentAttributes={detail.Attributes.Count}");
         L($"ProductDiscoveredRelationships={discoveredRels}");
         L($"ProductApprovedRelationships={approvedRels}");
         L($"ProductSentRelationships={detail.Relationships.Count}");
-        L($"Stage2PayloadChars={stage2.CharacterCount}");
+        L($"FullCatalogPayloadChars={built.CharacterCount}");
         L($"AnyUnapprovedInCatalog={detail.Relationships.Any(r => !r.IsApproved)}");
-        L($"BlockContainsFalseIsApproved={stage2.FormattedBlock.Contains("\"isApproved\":false", StringComparison.Ordinal)}");
+        L($"BlockContainsFalseIsApproved={built.FormattedBlock.Contains("\"isApproved\":false", StringComparison.Ordinal)}");
         foreach (var r in detail.Relationships)
         {
             L($"  sentRel schema={r.SchemaName} isApproved={r.IsApproved}");

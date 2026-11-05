@@ -146,19 +146,17 @@ public sealed class LiveFullApprovedMetadataPocTests
         }
 
         var catalogService = provider.GetRequiredService<ICrmAiMetadataCatalogService>();
-        var stage1Index = await catalogService.BuildApprovedEntitySelectionIndexAsync();
+        var catalog = await catalogService.BuildApprovedCatalogAsync();
+        File.WriteAllText(CatalogDumpPath, catalog.FormattedBlock ?? string.Empty);
         L("");
-        L("=== Stage 1 entity index ===");
-        L($"Success={stage1Index.Success} Error={stage1Index.Error}");
-        L($"ApprovedEntityCount={stage1Index.ApprovedEntityCount}");
-        L($"IndexChars={stage1Index.CharacterCount}");
-        L($"HasAttributesKey={stage1Index.FormattedBlock.Contains("\"attributes\"", StringComparison.Ordinal)}");
-        foreach (var e in stage1Index.Entities)
-        {
-            L($"  index: logicalName={e.LogicalName} displayName={e.DisplayName} description={(e.Description ?? "(null)")}");
-        }
+        L("=== Single-stage outbound catalog ===");
+        L($"Success={catalog.Success} Error={catalog.Error}");
+        L($"IncludedEntityCount={catalog.IncludedEntityCount}");
+        L($"IncludedAttributeCount={catalog.IncludedAttributeCount}");
+        L($"IncludedRelationshipCount={catalog.IncludedRelationshipCount}");
+        L($"MetadataPayloadChars={catalog.CharacterCount}");
+        L($"TruncationApplied={catalog.TruncationApplied}");
 
-        // Prove required fields exist in live metadata (Stage 2 will send full metadata for selected entities).
         static bool HasAttr(IReadOnlyList<CrmEntityMetadata> list, string entity, string attr) =>
             list.FirstOrDefault(e => e.LogicalName.Equals(entity, StringComparison.OrdinalIgnoreCase))
                 ?.Attributes.Any(a => a.LogicalName.Equals(attr, StringComparison.OrdinalIgnoreCase) && a.IsValidForRead) == true;
@@ -170,11 +168,12 @@ public sealed class LiveFullApprovedMetadataPocTests
         var campaignState = campaign?.Attributes.FirstOrDefault(a =>
             a.LogicalName.Equals("statecode", StringComparison.OrdinalIgnoreCase));
         L("");
-        L("=== Live metadata field presence (pre-Stage2) ===");
+        L("=== Live metadata field presence ===");
         L($"opportunity.estimatedvalue={hasEstimated}");
         L($"invoice.totalamount={hasInvoiceTotal}");
         L($"product.price={hasPrice}");
         L($"campaign.statecode present={campaignState is not null} options={campaignState?.OptionSetByValue.Count ?? 0}");
+        L($"CatalogContainsEstimatedValue={catalog.FormattedBlock.Contains("estimatedvalue", StringComparison.OrdinalIgnoreCase)}");
 
         var recorder = provider.GetRequiredService<RecordingChatClient>();
         using var scope = provider.CreateScope();
@@ -197,24 +196,13 @@ public sealed class LiveFullApprovedMetadataPocTests
                 chatEx = ex;
             }
 
-            L($"Stage1CallsApprox={recorder.CallCount}");
-            L($"Stage1RawText={Truncate(recorder.Stage1Text, 500)}");
-            var stage1Parsed = AiEntitySelectionParser.Parse(recorder.Stage1Text);
-            L($"Stage1ParseSuccess={stage1Parsed.Success} SelectedEntities=[{string.Join(",", stage1Parsed.SelectedEntities)}]");
-            L($"Stage2ToolCallReturned={recorder.LastFunctionCalls.Count > 0}");
+            L($"GroqCallCount={recorder.CallCount}");
+            L($"UserMessageUnchanged={recorder.LastUserMessage == q}");
+            L($"CatalogIncludedInRequest={recorder.LastRequestHadCatalog}");
+            L($"QueryCrmToolCallReturned={recorder.LastFunctionCalls.Count > 0}");
             if (recorder.LastProviderError is not null)
             {
                 L($"ProviderError={recorder.LastProviderError}");
-            }
-
-            if (!string.IsNullOrWhiteSpace(recorder.Stage2CatalogSnapshot))
-            {
-                File.WriteAllText(CatalogDumpPath + $".q{i + 1}.txt", recorder.Stage2CatalogSnapshot);
-                L($"Stage2MetadataChars={recorder.Stage2CatalogSnapshot.Length}");
-                L($"Stage2ContainsEstimatedValue={recorder.Stage2CatalogSnapshot.Contains("estimatedvalue", StringComparison.OrdinalIgnoreCase)}");
-                L($"Stage2ContainsTotalAmount={recorder.Stage2CatalogSnapshot.Contains("totalamount", StringComparison.OrdinalIgnoreCase)}");
-                L($"Stage2ContainsPrice={recorder.Stage2CatalogSnapshot.Contains("\"logicalName\":\"price\"", StringComparison.OrdinalIgnoreCase)}");
-                L($"Stage2ContainsStateCode={recorder.Stage2CatalogSnapshot.Contains("statecode", StringComparison.OrdinalIgnoreCase)}");
             }
 
             if (recorder.LastFunctionCalls.Count > 0)
@@ -252,7 +240,7 @@ public sealed class LiveFullApprovedMetadataPocTests
             var validationOk = string.Equals(response.SelectedTool, "query_crm", StringComparison.OrdinalIgnoreCase)
                                && !string.IsNullOrWhiteSpace(response.CrmDataProvider);
             L($"BackendReachedCrmExecution={validationOk}");
-            L($"PlanningSucceeded={recorder.LastFunctionCalls.Count > 0}");
+            L($"SingleStagePlanningCall={recorder.CallCount == 1}");
             L($"Outcome={(chatEx is null ? "completed" : "failed")}");
         }
 
@@ -261,8 +249,8 @@ public sealed class LiveFullApprovedMetadataPocTests
         L($"Report written: {ReportPath}");
         File.WriteAllText(ReportPath, sb.ToString());
 
-        Assert.True(stage1Index.Success, stage1Index.Error);
-        Assert.Equal(crmOptions.ApprovedEntities.Count, stage1Index.ApprovedEntityCount);
+        Assert.True(catalog.Success, catalog.Error);
+        Assert.Equal(crmOptions.ApprovedEntities.Count, catalog.IncludedEntityCount);
         Assert.True(totalDiscoveredAttrs > 0);
         Assert.True(totalDiscoveredRels > 0);
     }
@@ -409,7 +397,7 @@ public sealed class LiveFullApprovedMetadataPocTests
         return value.Length <= max ? value : value[..max] + "…";
     }
 
-    /// <summary>Captures Stage 1/2 Groq exchanges for the POC report.</summary>
+    /// <summary>Captures single-stage Groq exchanges for the POC report.</summary>
     private sealed class RecordingChatClient : IChatClient
     {
         private readonly LazyGroqChatClient _inner;
@@ -417,8 +405,8 @@ public sealed class LiveFullApprovedMetadataPocTests
         public RecordingChatClient(LazyGroqChatClient inner) => _inner = inner;
 
         public int CallCount { get; private set; }
-        public string? Stage1Text { get; private set; }
-        public string? Stage2CatalogSnapshot { get; private set; }
+        public string? LastUserMessage { get; private set; }
+        public bool LastRequestHadCatalog { get; private set; }
         public List<FunctionCallContent> LastFunctionCalls { get; private set; } = [];
         public string? LastText { get; private set; }
         public string? LastProviderError { get; private set; }
@@ -426,8 +414,8 @@ public sealed class LiveFullApprovedMetadataPocTests
         public void Reset()
         {
             CallCount = 0;
-            Stage1Text = null;
-            Stage2CatalogSnapshot = null;
+            LastUserMessage = null;
+            LastRequestHadCatalog = false;
             LastFunctionCalls = [];
             LastText = null;
             LastProviderError = null;
@@ -440,17 +428,9 @@ public sealed class LiveFullApprovedMetadataPocTests
         {
             var messages = chatMessages.ToList();
             CallCount++;
-            var hasCatalog = messages.Any(m =>
+            LastUserMessage = messages.LastOrDefault(m => m.Role == ChatRole.User)?.Text;
+            LastRequestHadCatalog = messages.Any(m =>
                 m.Text?.Contains(CrmAiMetadataCatalogService.BeginMarker, StringComparison.Ordinal) == true);
-            var hasIndex = messages.Any(m =>
-                m.Text?.Contains(CrmAiMetadataCatalogService.EntityIndexBeginMarker, StringComparison.Ordinal) == true);
-
-            if (hasCatalog)
-            {
-                Stage2CatalogSnapshot = messages
-                    .Select(m => m.Text)
-                    .FirstOrDefault(t => t?.Contains(CrmAiMetadataCatalogService.BeginMarker, StringComparison.Ordinal) == true);
-            }
 
             try
             {
@@ -459,11 +439,6 @@ public sealed class LiveFullApprovedMetadataPocTests
                     .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
                     .ToList();
                 LastText = response.Text;
-                if (hasIndex && !hasCatalog)
-                {
-                    Stage1Text = response.Text;
-                }
-
                 return response;
             }
             catch (Exception ex)

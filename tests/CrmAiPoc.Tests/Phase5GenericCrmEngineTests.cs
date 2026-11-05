@@ -24,7 +24,7 @@ public class Phase5GenericCrmEngineTests
         var metadata = new MockCrmMetadataService(registry, policy);
         var builder = new GenericCrmQueryBuilder(options);
         var auth = new CrmAuthorizationService(options, NullLogger<CrmAuthorizationService>.Instance, policy);
-        var repo = new MockGenericCrmRepository(metadata, policy, builder, auth);
+        var repo = new MockGenericCrmRepository(metadata, policy, builder, new FetchXmlAggregateBuilder(), auth);
         var tools = new CrmAiTools(repo, NullLogger<CrmAiTools>.Instance);
         return (policy, registry, metadata, repo, tools);
     }
@@ -36,7 +36,7 @@ public class Phase5GenericCrmEngineTests
         Assert.True(policy.IsApproved("salesorder"));
         Assert.True(policy.IsApproved("account"));
         Assert.False(policy.IsApproved("opportunity"));
-        Assert.True(policy.TryResolveEntityAlias("أوامر البيع", out var logical));
+        Assert.True(policy.TryResolveEntityAlias("sales orders", out var logical));
         Assert.Equal("salesorder", logical);
     }
 
@@ -83,9 +83,13 @@ public class Phase5GenericCrmEngineTests
             entity!);
 
         Assert.True(built.Success);
-        Assert.Contains("salesorders?", built.RelativeRequestUri);
-        Assert.Contains("totalamount gt 10000", built.RelativeRequestUri);
-        Assert.DoesNotContain("opportunity", built.RelativeRequestUri ?? "");
+        Assert.Contains("salesorders?fetchXml=", built.RelativeRequestUri);
+        Assert.False(string.IsNullOrWhiteSpace(built.FetchXml));
+        Assert.Contains("totalamount", built.FetchXml);
+        Assert.Contains("operator=\"gt\"", built.FetchXml);
+        Assert.Contains("10000", built.FetchXml);
+        Assert.DoesNotContain("$filter=", built.RelativeRequestUri);
+        Assert.DoesNotContain("opportunity", built.FetchXml ?? "");
         _ = policy;
     }
 
@@ -128,7 +132,12 @@ public class Phase5GenericCrmEngineTests
             entity);
 
         Assert.True(built.Success);
-        Assert.Contains("contains(name,'A'' or 1 eq 1')", built.RelativeRequestUri);
+        Assert.Contains("fetchXml=", built.RelativeRequestUri);
+        Assert.Contains("operator=\"like\"", built.FetchXml);
+        // Like pattern retains user text as a string value (XAttribute-escaped as needed).
+        Assert.Contains("%A' or 1 eq 1%", built.FetchXml);
+        Assert.DoesNotContain("$filter=", built.FetchXml);
+        Assert.DoesNotContain("contains(name,", built.FetchXml);
     }
 
     [Fact]

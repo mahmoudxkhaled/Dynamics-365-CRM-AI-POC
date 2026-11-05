@@ -19,7 +19,7 @@
   --we-radius: 12px;
   --we-radius-sm: 8px;
   --we-radius-lg: 16px;
-  --we-font: 'Segoe UI', 'Noto Sans Arabic', Tahoma, sans-serif;
+  --we-font: 'Segoe UI', Tahoma, sans-serif;
   --we-mono: Consolas, 'Cascadia Mono', 'Courier New', monospace;
   --placeholder: #9a96a4;
   --panel-head-bg: linear-gradient(180deg, var(--we-white) 0%, var(--we-purple-soft) 160%);
@@ -255,11 +255,6 @@ body {
   color: var(--fail);
 }
 
-.msg.rtl {
-  direction: rtl;
-  text-align: right;
-}
-
 .msg-summary {
   margin: 0 0 10px;
   white-space: pre-wrap;
@@ -402,11 +397,6 @@ table.crm-table td.col-empty {
   outline: none;
   border-color: var(--accent);
   box-shadow: var(--focus-ring);
-}
-
-.composer input[type='text'].rtl {
-  direction: rtl;
-  text-align: right;
 }
 
 .composer input[type='text']::placeholder {

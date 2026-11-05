@@ -8,13 +8,12 @@ public static class LocalCrmReplyFormatter
 {
     public static string FormatRefusalOrText(string? modelText, string languageHint)
     {
+        _ = languageHint;
         if (!string.IsNullOrWhiteSpace(modelText))
         {
             return modelText.Trim();
         }
 
-        return languageHint.Equals("ar", StringComparison.OrdinalIgnoreCase)
-            ? "يمكنني المساعدة فقط في استعلامات CRM للقراءة على الكيانات المعتمدة عبر query_crm."
-            : "I can only help with approved read-only CRM queries via query_crm.";
+        return "I can only help with approved read-only CRM queries via query_crm.";
     }
 }

@@ -15,7 +15,7 @@ public class Phase4PrivacyAndSecurityTests
         var messages = new List<ChatMessage>
         {
             new(ChatRole.System, "routing assistant"),
-            new(ChatRole.User, "هات الـ Sales Orders اللي اتعملت الشهر اللي فات")
+            new(ChatRole.User, "Show sales orders created last month")
         };
 
         var audit = OutboundAiPayloadAuditor.Audit(messages);

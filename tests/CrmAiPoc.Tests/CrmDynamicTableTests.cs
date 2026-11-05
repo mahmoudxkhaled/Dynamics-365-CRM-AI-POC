@@ -20,15 +20,18 @@ public class CrmDynamicTableTests
             BusinessTimeZoneId = "Africa/Cairo",
             EntityAliases = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
             {
-                ["lead"] = ["leads"]
+                ["account"] = ["accounts", "customers", "customer account", "customer accounts"],
+                ["contact"] = ["contacts", "contact persons", "primary contact", "primary contacts"],
+                ["salesorder"] = ["sales order", "sales orders", "orders"],
+                ["lead"] = ["leads", "prospects"]
             }
-        });
+});
         var policy = new EntityApprovalPolicy(options);
         var registry = new CrmMetadataRegistry();
         var metadata = new MockCrmMetadataService(registry, policy);
         var builder = new GenericCrmQueryBuilder(options);
         var auth = new CrmAuthorizationService(options, NullLogger<CrmAuthorizationService>.Instance, policy);
-        var repo = new MockGenericCrmRepository(metadata, policy, builder, auth);
+        var repo = new MockGenericCrmRepository(metadata, policy, builder, new FetchXmlAggregateBuilder(), auth);
         return (policy, metadata, repo);
     }
 

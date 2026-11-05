@@ -10,5 +10,10 @@ public enum RelativeDateToken
     ThisCalendarMonth,
     ThisWeek,
     Last7Days,
-    Last30Days
+    Last30Days,
+    /// <summary>
+    /// Inclusive of the current calendar month and the five preceding calendar months
+    /// in the business timezone: [first day of (now-5 months), first day of next month).
+    /// </summary>
+    Last6CalendarMonths
 }

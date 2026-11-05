@@ -2,7 +2,6 @@ import { Component, Input, OnChanges, SimpleChanges } from '@angular/core';
 import { ChatUiMessage } from '../../../../core/models/chat-response.model';
 import {
   extractRows,
-  hasArabic,
   isCountResult,
   shouldShowTable,
   summaryFromReply
@@ -18,7 +17,6 @@ export class ChatMessageComponent implements OnChanges {
   @Input({ required: true }) message!: ChatUiMessage;
 
   mode: 'plain' | 'count' | 'table' = 'plain';
-  arabic = false;
   summary = '';
   summaryFirst = '';
   summaryRest = '';
@@ -39,14 +37,12 @@ export class ChatMessageComponent implements OnChanges {
 
     if (msg.role === 'user' || msg.role === 'meta' || msg.error || !msg.structuredData) {
       this.mode = 'plain';
-      this.arabic = hasArabic(msg.text || msg.reply || '');
       return;
     }
 
     const reply = msg.reply || '';
     const structured = msg.structuredData;
     const rows = extractRows(structured);
-    this.arabic = hasArabic(reply);
     this.summary = summaryFromReply(reply);
     const lines = this.summary.split('\n');
     this.summaryFirst = lines[0] || this.summary;
@@ -54,11 +50,9 @@ export class ChatMessageComponent implements OnChanges {
 
     if (isCountResult(structured, rows) && structured.count != null) {
       this.mode = 'count';
-      this.countLabel = this.arabic ? 'العدد' : 'Count';
+      this.countLabel = 'Count';
       this.countCapped = structured.countMayBeCapped
-        ? this.arabic
-          ? ' (على الأقل — قد يكون العدد أكبر)'
-          : ' (at least — may be higher)'
+        ? ' (at least — may be higher)'
         : '';
       return;
     }

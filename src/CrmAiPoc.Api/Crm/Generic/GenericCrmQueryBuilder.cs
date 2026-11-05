@@ -1,5 +1,5 @@
 using System.Globalization;
-using System.Text;
+using System.Xml.Linq;
 using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Metadata;
 using CrmAiPoc.Api.Crm.Query;
@@ -7,8 +7,14 @@ using Microsoft.Extensions.Options;
 
 namespace CrmAiPoc.Api.Crm.Generic;
 
+/// <summary>
+/// Metadata-validated FetchXML builder for list and count business queries.
+/// Aggregates are handled by <see cref="FetchXmlAggregateBuilder"/>.
+/// </summary>
 public sealed class GenericCrmQueryBuilder : IGenericCrmQueryBuilder
 {
+    public const string CountAlias = "record_count";
+
     private readonly TimeZoneInfo _businessTz;
     private readonly Func<DateTimeOffset> _utcNow;
 
@@ -18,116 +24,331 @@ public sealed class GenericCrmQueryBuilder : IGenericCrmQueryBuilder
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
     }
 
-    public GenericCrmODataBuildResult Build(CrmQueryPlan plan, CrmEntityMetadata entity, CrmEntityMetadata? relatedFrom = null)
+    public GenericCrmQueryBuildResult Build(
+        CrmQueryPlan plan,
+        CrmEntityMetadata entity,
+        CrmEntityMetadata? relatedFrom = null,
+        Func<string, CrmEntityMetadata?>? getEntity = null)
     {
         if (plan is null || entity is null)
         {
-            return GenericCrmODataBuildResult.Fail("Query plan and entity metadata are required.");
+            return GenericCrmQueryBuildResult.Fail("Query plan and entity metadata are required.");
         }
 
         if (!entity.IsApprovedForAi)
         {
-            return GenericCrmODataBuildResult.Fail($"Entity '{entity.LogicalName}' is not approved for AI queries.");
+            return GenericCrmQueryBuildResult.Fail($"Entity '{entity.LogicalName}' is not approved for AI queries.");
+        }
+
+        if (plan.Operation == CrmQueryOperation.Aggregate)
+        {
+            return GenericCrmQueryBuildResult.Fail(
+                "operation=aggregate must use FetchXmlAggregateBuilder (routed by the CRM repository).");
         }
 
         if (plan.Filters.Count > CrmQueryLimits.MaxFilters)
         {
-            return GenericCrmODataBuildResult.Fail($"A maximum of {CrmQueryLimits.MaxFilters} filters is allowed.");
+            return GenericCrmQueryBuildResult.Fail($"A maximum of {CrmQueryLimits.MaxFilters} filters is allowed.");
         }
 
         if (plan.Sort.Count > CrmQueryLimits.MaxSortFields)
         {
-            return GenericCrmODataBuildResult.Fail($"A maximum of {CrmQueryLimits.MaxSortFields} sort fields is allowed.");
+            return GenericCrmQueryBuildResult.Fail($"A maximum of {CrmQueryLimits.MaxSortFields} sort fields is allowed.");
         }
 
-        var filterClauses = new List<string>();
         var summaries = new List<string>();
+        var conditions = new List<XElement>();
 
-        if (!string.IsNullOrWhiteSpace(plan.RelatedFromEntity) || !string.IsNullOrWhiteSpace(plan.RelatedFromId))
+        var related = FetchXmlConditionBuilder.BuildRelationshipCondition(
+            entity, plan.RelatedFromEntity, plan.RelatedFromId, relatedFrom);
+        if (!related.Success)
         {
-            if (string.IsNullOrWhiteSpace(plan.RelatedFromEntity) || string.IsNullOrWhiteSpace(plan.RelatedFromId))
-            {
-                return GenericCrmODataBuildResult.Fail("relatedFromEntity and relatedFromId must be provided together.");
-            }
+            return GenericCrmQueryBuildResult.Fail(related.Error!);
+        }
 
-            var hop = CrmRelationshipResolver.ResolveOneHop(entity, plan.RelatedFromEntity, plan.RelatedFromId, relatedFrom);
-            if (!hop.Success)
+        if (related.Condition is not null)
+        {
+            conditions.Add(related.Condition);
+            if (!string.IsNullOrWhiteSpace(related.Summary))
             {
-                return GenericCrmODataBuildResult.Fail(hop.Error!);
+                summaries.Add(related.Summary!);
             }
-
-            filterClauses.Add($"{hop.FilterField} eq {hop.FilterValue}");
-            summaries.Add(hop.Summary!);
         }
 
         if (plan.RelativeDate is not null)
         {
-            var relative = BuildRelativeDate(entity, plan.RelativeDate);
+            var relative = FetchXmlConditionBuilder.BuildRelativeDate(
+                entity, plan.RelativeDate, _utcNow(), _businessTz);
             if (!relative.Success)
             {
-                return GenericCrmODataBuildResult.Fail(relative.Error!);
+                return GenericCrmQueryBuildResult.Fail(relative.Error!);
             }
 
-            filterClauses.AddRange(relative.Clauses!);
+            conditions.AddRange(relative.Conditions!);
             summaries.Add(relative.Summary!);
         }
 
         foreach (var filter in plan.Filters)
         {
-            var built = BuildFilter(entity, filter);
+            var built = FetchXmlConditionBuilder.BuildFilter(entity, filter);
             if (!built.Success)
             {
-                return GenericCrmODataBuildResult.Fail(built.Error!);
+                return GenericCrmQueryBuildResult.Fail(built.Error!);
             }
 
-            filterClauses.Add(built.Clause!);
+            conditions.Add(built.Condition!);
             summaries.Add(built.Summary!);
         }
 
-        var select = ResolveSelect(entity, plan.Select);
-        string? orderby = null;
+        IReadOnlyList<CrmResolvedLink> resolvedLinks = Array.Empty<CrmResolvedLink>();
+        IReadOnlyList<CrmTableColumn> linkColumns = Array.Empty<CrmTableColumn>();
+        if (plan.Links.Count > 0)
+        {
+            if (plan.Operation == CrmQueryOperation.Count)
+            {
+                // Related filters on links are allowed for root counting; projection links without filters
+                // do not change the count. Nested selects are ignored for count.
+            }
+
+            getEntity ??= static _ => null;
+            var linkResult = CrmRelationshipResolver.ResolveLinks(entity, plan.Links, getEntity);
+            if (!linkResult.Success)
+            {
+                return GenericCrmQueryBuildResult.Fail(linkResult.Error!);
+            }
+
+            resolvedLinks = linkResult.Links;
+            foreach (var link in FlattenLinks(resolvedLinks))
+            {
+                summaries.Add(link.Summary);
+                if (link.ExpandsToMany)
+                {
+                    summaries.Add(
+                        "expands-to-many: joined rows may duplicate root records; " +
+                        "FetchXML top/limit applies to joined rows, not distinct roots.");
+                }
+            }
+
+            if (plan.Operation == CrmQueryOperation.Count &&
+                FlattenLinks(resolvedLinks).Any(l => l.ExpandsToMany && l.Filters.Count == 0 && l.JoinType != CrmLinkJoinType.Inner))
+            {
+                // Outer 1:N projection links do not change root count; strip them from count FetchXML path.
+                // Inner / filtered links remain and use distinct root counting below.
+            }
+
+            linkColumns = BuildLinkColumns(resolvedLinks, getEntity);
+        }
+
+        var selectLogical = ResolveSelectLogical(entity, plan.Select);
+        var selectOData = selectLogical
+            .Select(logical => entity.TryGetAttribute(logical, out var attr) ? attr.ODataPropertyName : logical)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var limit = ClampLimit(plan.Limit);
         string? sortSummary = null;
+        IReadOnlyList<(string Attribute, bool Descending)> orders = Array.Empty<(string, bool)>();
+
         if (plan.Operation == CrmQueryOperation.List)
         {
             var sort = BuildSort(entity, plan.Sort);
             if (!sort.Success)
             {
-                return GenericCrmODataBuildResult.Fail(sort.Error!);
+                return GenericCrmQueryBuildResult.Fail(sort.Error!);
             }
 
-            orderby = sort.OrderBy;
+            orders = sort.Orders;
             sortSummary = sort.Summary;
         }
 
-        var limit = ClampLimit(plan.Limit);
-        var sb = new StringBuilder();
-        sb.Append(entity.EntitySetName);
-        sb.Append("?$select=");
-        sb.Append(string.Join(",", select));
+        var fetchXml = plan.Operation == CrmQueryOperation.Count
+            ? BuildCountFetchXml(entity, conditions, selectLogical, resolvedLinks)
+            : BuildListFetchXml(entity, conditions, selectLogical, orders, limit, resolvedLinks);
 
-        if (filterClauses.Count > 0)
+        var uri = FetchXmlConditionBuilder.EncodeFetchUri(entity.EntitySetName, fetchXml);
+        return GenericCrmQueryBuildResult.Ok(
+            uri,
+            fetchXml,
+            plan.Operation,
+            summaries,
+            sortSummary,
+            limit,
+            selectOData,
+            linkColumns);
+    }
+
+    private static string BuildListFetchXml(
+        CrmEntityMetadata entity,
+        IReadOnlyList<XElement> conditions,
+        IReadOnlyList<string> selectLogical,
+        IReadOnlyList<(string Attribute, bool Descending)> orders,
+        int top,
+        IReadOnlyList<CrmResolvedLink> links)
+    {
+        var entityEl = new XElement("entity", new XAttribute("name", entity.LogicalName));
+        foreach (var attr in selectLogical)
         {
-            sb.Append("&$filter=");
-            sb.Append(string.Join(" and ", filterClauses));
+            entityEl.Add(new XElement("attribute", new XAttribute("name", attr)));
         }
 
-        if (plan.Operation == CrmQueryOperation.Count)
+        foreach (var (attribute, descending) in orders)
         {
-            sb.Append("&$count=true&$top=1");
+            entityEl.Add(new XElement(
+                "order",
+                new XAttribute("attribute", attribute),
+                new XAttribute("descending", descending ? "true" : "false")));
         }
-        else
+
+        if (conditions.Count > 0)
         {
-            if (!string.IsNullOrWhiteSpace(orderby))
+            entityEl.Add(new XElement("filter", new XAttribute("type", "and"), conditions));
+        }
+
+        foreach (var link in links)
+        {
+            entityEl.Add(BuildLinkEntityElement(link, includeAttributes: true));
+        }
+
+        var fetch = new XElement(
+            "fetch",
+            new XAttribute("version", "1.0"),
+            new XAttribute("mapping", "logical"),
+            new XAttribute("top", top.ToString(CultureInfo.InvariantCulture)),
+            entityEl);
+
+        return fetch.ToString(SaveOptions.DisableFormatting);
+    }
+
+    private static string BuildCountFetchXml(
+        CrmEntityMetadata entity,
+        IReadOnlyList<XElement> conditions,
+        IReadOnlyList<string> selectLogical,
+        IReadOnlyList<CrmResolvedLink> links)
+    {
+        var countField = !string.IsNullOrWhiteSpace(entity.PrimaryIdAttribute)
+            ? entity.PrimaryIdAttribute
+            : selectLogical.FirstOrDefault() ?? "activityid";
+
+        var entityEl = new XElement(
+            "entity",
+            new XAttribute("name", entity.LogicalName),
+            new XElement(
+                "attribute",
+                new XAttribute("name", countField),
+                new XAttribute("alias", CountAlias),
+                new XAttribute("aggregate", "count")));
+
+        if (conditions.Count > 0)
+        {
+            entityEl.Add(new XElement("filter", new XAttribute("type", "and"), conditions));
+        }
+
+        // Include link-entity only when they carry filters or are inner joins (affect matching roots).
+        var countLinks = links
+            .Where(l => l.Filters.Count > 0 || l.JoinType == CrmLinkJoinType.Inner)
+            .ToList();
+        foreach (var link in countLinks)
+        {
+            entityEl.Add(BuildLinkEntityElement(link, includeAttributes: false));
+        }
+
+        // Root-record count semantics: when a 1:N expand could duplicate roots, use distinct=true
+        // explicitly so COUNT(root PK) is a root count — never applied silently to list queries.
+        var needsDistinctRootCount = FlattenLinks(countLinks).Any(l => l.ExpandsToMany);
+
+        var fetch = new XElement(
+            "fetch",
+            new XAttribute("mapping", "logical"),
+            new XAttribute("aggregate", "true"),
+            new XAttribute("distinct", needsDistinctRootCount ? "true" : "false"),
+            entityEl);
+
+        return fetch.ToString(SaveOptions.DisableFormatting);
+    }
+
+    private static XElement BuildLinkEntityElement(CrmResolvedLink link, bool includeAttributes)
+    {
+        var linkType = link.JoinType == CrmLinkJoinType.Inner ? "inner" : "outer";
+        var el = new XElement(
+            "link-entity",
+            new XAttribute("name", link.LinkEntityLogicalName),
+            new XAttribute("from", link.FromAttribute),
+            new XAttribute("to", link.ToAttribute),
+            new XAttribute("alias", link.Alias),
+            new XAttribute("link-type", linkType));
+
+        if (includeAttributes)
+        {
+            foreach (var attr in link.SelectLogicalNames)
             {
-                sb.Append("&$orderby=");
-                sb.Append(orderby);
+                el.Add(new XElement("attribute", new XAttribute("name", attr)));
+            }
+        }
+
+        if (link.Filters.Count > 0)
+        {
+            var filterEl = new XElement("filter", new XAttribute("type", "and"));
+            foreach (var (attribute, op, value, _) in link.Filters)
+            {
+                filterEl.Add(new XElement(
+                    "condition",
+                    new XAttribute("attribute", attribute),
+                    new XAttribute("operator", op),
+                    new XAttribute("value", value)));
             }
 
-            sb.Append("&$top=");
-            sb.Append(limit.ToString(CultureInfo.InvariantCulture));
+            el.Add(filterEl);
         }
 
-        return GenericCrmODataBuildResult.Ok(sb.ToString(), plan.Operation, summaries, sortSummary, limit, select);
+        foreach (var child in link.Children)
+        {
+            el.Add(BuildLinkEntityElement(child, includeAttributes));
+        }
+
+        return el;
+    }
+
+    private static IEnumerable<CrmResolvedLink> FlattenLinks(IEnumerable<CrmResolvedLink> links)
+    {
+        foreach (var link in links)
+        {
+            yield return link;
+            foreach (var child in FlattenLinks(link.Children))
+            {
+                yield return child;
+            }
+        }
+    }
+
+    private static IReadOnlyList<CrmTableColumn> BuildLinkColumns(
+        IReadOnlyList<CrmResolvedLink> links,
+        Func<string, CrmEntityMetadata?> getEntity)
+    {
+        var cols = new List<CrmTableColumn>();
+        foreach (var link in FlattenLinks(links))
+        {
+            var meta = getEntity(link.LinkEntityLogicalName);
+            foreach (var attrName in link.SelectLogicalNames)
+            {
+                CrmAttributeMetadata? attr = null;
+                if (meta is not null && meta.TryGetAttribute(attrName, out var resolved))
+                {
+                    attr = resolved;
+                }
+
+                var display = attr?.DisplayName ?? attrName;
+                var key = $"{link.Alias}.{attrName}";
+                cols.Add(new CrmTableColumn
+                {
+                    Key = key,
+                    Label = $"{meta?.DisplayName ?? link.LinkEntityLogicalName} {display}".Trim(),
+                    Kind = attr?.Kind.ToString().ToLowerInvariant() ?? "string",
+                    LogicalName = attrName
+                });
+            }
+        }
+
+        return cols;
     }
 
     private static int ClampLimit(int limit) =>
@@ -142,7 +363,7 @@ public sealed class GenericCrmQueryBuilder : IGenericCrmQueryBuilder
         "customerid", "te_customeraccountid", "parentcustomerid"
     ];
 
-    private static IReadOnlyList<string> ResolveSelect(CrmEntityMetadata entity, IReadOnlyList<string> requested)
+    private static IReadOnlyList<string> ResolveSelectLogical(CrmEntityMetadata entity, IReadOnlyList<string> requested)
     {
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         TryAddSelect(set, entity, entity.PrimaryIdAttribute);
@@ -163,7 +384,6 @@ public sealed class GenericCrmQueryBuilder : IGenericCrmQueryBuilder
             return set.ToArray();
         }
 
-        // Preferred safe columns first — never dump arbitrary first-N from full EntityDefinitions.
         foreach (var preferred in PreferredSelectFields)
         {
             if (set.Count >= CrmQueryLimits.MaxSelectFields)
@@ -174,7 +394,6 @@ public sealed class GenericCrmQueryBuilder : IGenericCrmQueryBuilder
             TryAddSelect(set, entity, preferred, requireSafeDefault: true);
         }
 
-        // Only top up when preferred matched very few columns (e.g. stub metadata).
         if (set.Count < 6)
         {
             foreach (var attr in entity.Attributes
@@ -186,7 +405,7 @@ public sealed class GenericCrmQueryBuilder : IGenericCrmQueryBuilder
                     break;
                 }
 
-                set.Add(attr.ODataPropertyName);
+                set.Add(attr.LogicalName);
             }
         }
 
@@ -206,12 +425,11 @@ public sealed class GenericCrmQueryBuilder : IGenericCrmQueryBuilder
 
         if (!entity.TryGetAttribute(logicalOrOData, out var attr) || !attr.IsValidForRead)
         {
-            // Primary id/name may not yet be in Attributes for stubs — still allow raw logical names.
             if (!requireSafeDefault &&
                 (logicalOrOData.Equals(entity.PrimaryIdAttribute, StringComparison.OrdinalIgnoreCase) ||
                  logicalOrOData.Equals(entity.PrimaryNameAttribute, StringComparison.OrdinalIgnoreCase)))
             {
-                set.Add(logicalOrOData);
+                set.Add(FetchXmlConditionBuilder.ToFetchAttributeName(logicalOrOData));
             }
 
             return;
@@ -222,7 +440,7 @@ public sealed class GenericCrmQueryBuilder : IGenericCrmQueryBuilder
             return;
         }
 
-        set.Add(attr.ODataPropertyName);
+        set.Add(attr.LogicalName);
     }
 
     private static bool IsSafeDefaultSelectField(CrmAttributeMetadata attr, CrmEntityMetadata entity)
@@ -247,7 +465,6 @@ public sealed class GenericCrmQueryBuilder : IGenericCrmQueryBuilder
             return false;
         }
 
-        // Allow primary name fields; skip other *name formatted/virtual strings.
         if (n.EndsWith("name", StringComparison.OrdinalIgnoreCase) &&
             !n.Equals(entity.PrimaryNameAttribute, StringComparison.OrdinalIgnoreCase) &&
             n is not ("name" or "fullname" or "firstname" or "lastname" or "subject"))
@@ -262,162 +479,24 @@ public sealed class GenericCrmQueryBuilder : IGenericCrmQueryBuilder
             or CrmAttributeKind.Owner;
     }
 
-    private FilterBuild BuildRelativeDate(CrmEntityMetadata entity, CrmRelativeDateFilter relative)
-    {
-        if (!entity.TryGetAttribute(relative.Field, out var field) || field.Kind != CrmAttributeKind.DateTime)
-        {
-            return FilterBuild.Fail($"Relative date field '{relative.Field}' is not an approved date field on {entity.LogicalName}.");
-        }
-
-        var (start, end, description) = RelativeDateResolver.Resolve(relative.Token, _utcNow(), _businessTz);
-        return FilterBuild.OkClauses(
-            [
-                $"{field.ODataPropertyName} ge {FormatDateLiteral(start)}",
-                $"{field.ODataPropertyName} lt {FormatDateLiteral(end)}"
-            ],
-            $"{field.LogicalName} in {description} [{start:u} .. {end:u})");
-    }
-
-    private static FilterBuild BuildFilter(CrmEntityMetadata entity, CrmQueryFilter filter)
-    {
-        if (string.IsNullOrWhiteSpace(filter.Field) || string.IsNullOrWhiteSpace(filter.Value))
-        {
-            return FilterBuild.Fail("Each filter requires field and value.");
-        }
-
-        if (!entity.TryGetAttribute(filter.Field, out var field) || !field.IsFilterable)
-        {
-            return FilterBuild.Fail($"Field '{filter.Field}' is not allowlisted/filterable on '{entity.LogicalName}'.");
-        }
-
-        if (!field.AllowedOperators.Contains(filter.Operator))
-        {
-            return FilterBuild.Fail($"Operator '{filter.Operator}' is not allowed for '{field.LogicalName}'.");
-        }
-
-        if (filter.Operator == CrmFilterOperator.Contains && !field.IsSearchable)
-        {
-            return FilterBuild.Fail($"contains is only allowed on searchable text fields, not '{field.LogicalName}'.");
-        }
-
-        return field.Kind switch
-        {
-            CrmAttributeKind.String or CrmAttributeKind.Memo => BuildString(field, filter),
-            CrmAttributeKind.Money or CrmAttributeKind.Decimal or CrmAttributeKind.Integer => BuildNumber(field, filter),
-            CrmAttributeKind.DateTime => BuildDate(field, filter),
-            CrmAttributeKind.Boolean => BuildBool(field, filter),
-            CrmAttributeKind.Picklist or CrmAttributeKind.Status or CrmAttributeKind.State => BuildOption(field, filter),
-            CrmAttributeKind.Lookup or CrmAttributeKind.Customer or CrmAttributeKind.Owner
-                or CrmAttributeKind.Guid or CrmAttributeKind.Uniqueidentifier => BuildGuid(field, filter),
-            _ => FilterBuild.Fail($"Unsupported field type for '{field.LogicalName}'.")
-        };
-    }
-
-    private static FilterBuild BuildString(CrmAttributeMetadata field, CrmQueryFilter filter)
-    {
-        var value = filter.Value.Trim();
-        if (value.Length > 200 || ContainsInjectionAttempt(value))
-        {
-            return FilterBuild.Fail("Text filter value is invalid or disallowed.");
-        }
-
-        var escaped = EscapeODataString(value);
-        if (filter.Operator == CrmFilterOperator.Contains)
-        {
-            return FilterBuild.Ok($"contains({field.ODataPropertyName},'{escaped}')", $"{field.LogicalName} contains '{value}'");
-        }
-
-        var op = Op(filter.Operator);
-        return FilterBuild.Ok($"{field.ODataPropertyName} {op} '{escaped}'", $"{field.LogicalName} {op} '{value}'");
-    }
-
-    private static FilterBuild BuildNumber(CrmAttributeMetadata field, CrmQueryFilter filter)
-    {
-        if (!decimal.TryParse(filter.Value.Trim(), NumberStyles.Number, CultureInfo.InvariantCulture, out var number))
-        {
-            return FilterBuild.Fail($"Value for '{field.LogicalName}' must be a number.");
-        }
-
-        var lit = field.Kind == CrmAttributeKind.Integer
-            ? ((long)number).ToString(CultureInfo.InvariantCulture)
-            : number.ToString(CultureInfo.InvariantCulture);
-        var op = Op(filter.Operator);
-        return FilterBuild.Ok($"{field.ODataPropertyName} {op} {lit}", $"{field.LogicalName} {op} {lit}");
-    }
-
-    private static FilterBuild BuildDate(CrmAttributeMetadata field, CrmQueryFilter filter)
-    {
-        if (!DateTimeOffset.TryParse(filter.Value.Trim(), CultureInfo.InvariantCulture,
-                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dto))
-        {
-            return FilterBuild.Fail($"Value for '{field.LogicalName}' must be an ISO date/time or use relativeDate.");
-        }
-
-        var op = Op(filter.Operator);
-        var lit = FormatDateLiteral(dto);
-        return FilterBuild.Ok($"{field.ODataPropertyName} {op} {lit}", $"{field.LogicalName} {op} {lit}");
-    }
-
-    private static FilterBuild BuildBool(CrmAttributeMetadata field, CrmQueryFilter filter)
-    {
-        if (!bool.TryParse(filter.Value.Trim(), out var b))
-        {
-            return FilterBuild.Fail($"Value for '{field.LogicalName}' must be true or false.");
-        }
-
-        var op = Op(filter.Operator);
-        var lit = b ? "true" : "false";
-        return FilterBuild.Ok($"{field.ODataPropertyName} {op} {lit}", $"{field.LogicalName} {op} {lit}");
-    }
-
-    private static FilterBuild BuildOption(CrmAttributeMetadata field, CrmQueryFilter filter)
-    {
-        int code;
-        if (int.TryParse(filter.Value.Trim(), out code) && field.OptionSetByValue.ContainsKey(code))
-        {
-            // ok
-        }
-        else if (!field.OptionSetByLabel.TryGetValue(filter.Value.Trim(), out code))
-        {
-            return FilterBuild.Fail($"Unknown option value '{filter.Value}' for '{field.LogicalName}'.");
-        }
-
-        var label = field.OptionSetByValue.TryGetValue(code, out var l) ? l : code.ToString(CultureInfo.InvariantCulture);
-        var op = Op(filter.Operator);
-        return FilterBuild.Ok(
-            $"{field.ODataPropertyName} {op} {code.ToString(CultureInfo.InvariantCulture)}",
-            $"{field.LogicalName} {op} {code} ({label})");
-    }
-
-    private static FilterBuild BuildGuid(CrmAttributeMetadata field, CrmQueryFilter filter)
-    {
-        if (!Guid.TryParse(filter.Value.Trim(), out var id) || id == Guid.Empty)
-        {
-            return FilterBuild.Fail($"Lookup/GUID filter on '{field.LogicalName}' requires a non-empty GUID.");
-        }
-
-        var op = Op(filter.Operator);
-        return FilterBuild.Ok($"{field.ODataPropertyName} {op} {id:D}", $"{field.LogicalName} {op} {id:D}");
-    }
-
     private static SortBuild BuildSort(CrmEntityMetadata entity, IReadOnlyList<CrmQuerySort> sorts)
     {
         if (sorts.Count == 0)
         {
             if (entity.TryGetAttribute("createdon", out var created) && created.IsSortable)
             {
-                return SortBuild.Ok($"{created.ODataPropertyName} desc", "createdon desc (default)");
+                return SortBuild.Ok([(created.LogicalName, true)], "createdon desc (default)");
             }
 
             if (entity.TryGetAttribute(entity.PrimaryNameAttribute, out var name) && name.IsSortable)
             {
-                return SortBuild.Ok($"{name.ODataPropertyName} asc", $"{name.LogicalName} asc (default)");
+                return SortBuild.Ok([(name.LogicalName, false)], $"{name.LogicalName} asc (default)");
             }
 
-            return SortBuild.Ok(null, null);
+            return SortBuild.Ok([], null);
         }
 
-        var parts = new List<string>();
+        var parts = new List<(string, bool)>();
         var summaries = new List<string>();
         foreach (var sort in sorts)
         {
@@ -426,75 +505,24 @@ public sealed class GenericCrmQueryBuilder : IGenericCrmQueryBuilder
                 return SortBuild.Fail($"Sort field '{sort.Field}' is not approved/sortable on '{entity.LogicalName}'.");
             }
 
-            var dir = sort.Direction == CrmSortDirection.Asc ? "asc" : "desc";
-            parts.Add($"{field.ODataPropertyName} {dir}");
-            summaries.Add($"{field.LogicalName} {dir}");
+            var desc = sort.Direction != CrmSortDirection.Asc;
+            parts.Add((field.LogicalName, desc));
+            summaries.Add($"{field.LogicalName} {(desc ? "desc" : "asc")}");
         }
 
-        return SortBuild.Ok(string.Join(",", parts), string.Join(", ", summaries));
-    }
-
-    private static string Op(CrmFilterOperator op) => op switch
-    {
-        CrmFilterOperator.Eq => "eq",
-        CrmFilterOperator.Ne => "ne",
-        CrmFilterOperator.Gt => "gt",
-        CrmFilterOperator.Ge => "ge",
-        CrmFilterOperator.Lt => "lt",
-        CrmFilterOperator.Le => "le",
-        _ => throw new InvalidOperationException($"Operator {op} is not a binary OData operator.")
-    };
-
-    private static string EscapeODataString(string value) =>
-        value.Replace("'", "''", StringComparison.Ordinal);
-
-    private static string FormatDateLiteral(DateTimeOffset value) =>
-        value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
-
-    private static bool ContainsInjectionAttempt(string value)
-    {
-        ReadOnlySpan<string> blocked =
-        [
-            "$filter", "$select", "$orderby", "$expand", " fetch", "<fetch", "fetchxml", ";", "--", "*/", "/*"
-        ];
-        foreach (var token in blocked)
-        {
-            if (value.Contains(token, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private sealed class FilterBuild
-    {
-        public bool Success { get; init; }
-        public string? Error { get; init; }
-        public string? Clause { get; init; }
-        public IReadOnlyList<string>? Clauses { get; init; }
-        public string? Summary { get; init; }
-
-        public static FilterBuild Ok(string clause, string summary) =>
-            new() { Success = true, Clause = clause, Summary = summary };
-
-        public static FilterBuild OkClauses(IReadOnlyList<string> clauses, string summary) =>
-            new() { Success = true, Clauses = clauses, Summary = summary };
-
-        public static FilterBuild Fail(string error) =>
-            new() { Success = false, Error = error };
+        return SortBuild.Ok(parts, string.Join(", ", summaries));
     }
 
     private sealed class SortBuild
     {
         public bool Success { get; init; }
         public string? Error { get; init; }
-        public string? OrderBy { get; init; }
+        public IReadOnlyList<(string Attribute, bool Descending)> Orders { get; init; } =
+            Array.Empty<(string, bool)>();
         public string? Summary { get; init; }
 
-        public static SortBuild Ok(string? orderBy, string? summary) =>
-            new() { Success = true, OrderBy = orderBy, Summary = summary };
+        public static SortBuild Ok(IReadOnlyList<(string, bool)> orders, string? summary) =>
+            new() { Success = true, Orders = orders, Summary = summary };
 
         public static SortBuild Fail(string error) =>
             new() { Success = false, Error = error };

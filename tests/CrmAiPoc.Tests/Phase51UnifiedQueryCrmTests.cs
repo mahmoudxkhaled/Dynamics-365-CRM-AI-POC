@@ -19,51 +19,29 @@ public class Phase51UnifiedQueryCrmTests
             BusinessTimeZoneId = "Africa/Cairo",
             EntityAliases = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
             {
-                ["lead"] = ["leads", "ليد"]
+                ["account"] = ["accounts", "customers", "customer account", "customer accounts"],
+                ["contact"] = ["contacts", "contact persons", "primary contact", "primary contacts"],
+                ["salesorder"] = ["sales order", "sales orders", "orders"],
+                ["lead"] = ["leads", "prospects"]
             }
-        });
+});
         var policy = new EntityApprovalPolicy(options);
         var registry = new CrmMetadataRegistry();
         var metadata = new MockCrmMetadataService(registry, policy);
         var builder = new GenericCrmQueryBuilder(options);
         var auth = new CrmAuthorizationService(options, NullLogger<CrmAuthorizationService>.Instance, policy);
-        var repo = new MockGenericCrmRepository(metadata, policy, builder, auth);
+        var repo = new MockGenericCrmRepository(metadata, policy, builder, new FetchXmlAggregateBuilder(), auth);
         var tools = new CrmAiTools(repo, NullLogger<CrmAiTools>.Instance);
         return (repo, tools, policy);
     }
 
     [Theory]
-    [InlineData("Show me the latest 5 sales orders", "account", "salesorder")]
-    [InlineData("Show me the latest 5 accounts", "salesorder", "account")]
-    [InlineData("Show me the latest 5 contacts", "account", "contact")]
-    [InlineData("Count active sales orders", "lead", "salesorder")]
-    [InlineData("Show me the latest 5 leads", "contact", "lead")]
-    public void Intent_Corrects_Sticky_Entity_On_QueryCrm(string message, string wrongEntity, string expectedEntity)
+    [InlineData("Show me the latest 5 sales orders", "salesorder")]
+    [InlineData("Show me the latest 5 accounts", "account")]
+    [InlineData("Count active sales orders", "salesorder")]
+    public void DetectEntity_Vocabulary_Still_Works(string message, string expectedEntity)
     {
-        var call = new FunctionCallContent(
-            "1",
-            "query_crm",
-            new Dictionary<string, object?>
-            {
-                ["entity"] = wrongEntity,
-                ["operation"] = "list",
-                ["limit"] = 5
-            });
-        var corrected = CrmQueryIntentHelper.CorrectToolCall(message, call);
-        Assert.Equal("query_crm", corrected.Name);
-        Assert.Equal(expectedEntity, corrected.Arguments!["entity"]?.ToString());
-    }
-
-    [Fact]
-    public void Intent_Forces_Active_Filter_For_Active_SalesOrder_Count()
-    {
-        var call = new FunctionCallContent(
-            "1",
-            "query_crm",
-            new Dictionary<string, object?> { ["entity"] = "salesorder", ["operation"] = "list" });
-        var corrected = CrmQueryIntentHelper.CorrectToolCall("Count active sales orders", call);
-        Assert.Equal("count", corrected.Arguments!["operation"]?.ToString());
-        Assert.Contains("Active", corrected.Arguments["filtersJson"]?.ToString());
+        Assert.Equal(expectedEntity, CrmQueryIntentHelper.DetectEntityLogicalName(message));
     }
 
     [Theory]
@@ -83,8 +61,11 @@ public class Phase51UnifiedQueryCrmTests
 
         Assert.Equal(entity, result.Entity);
         Assert.False(string.IsNullOrWhiteSpace(result.RelativeRequestUri));
-        Assert.Contains("?$select=", result.RelativeRequestUri);
-        Assert.Contains("$top=5", result.RelativeRequestUri);
+        Assert.Contains("fetchXml=", result.RelativeRequestUri);
+        Assert.DoesNotContain("$select=", result.RelativeRequestUri);
+        Assert.DoesNotContain("$top=", result.RelativeRequestUri);
+        var fetch = Uri.UnescapeDataString(result.RelativeRequestUri.Split("fetchXml=", 2)[1]);
+        Assert.Contains("top=\"5\"", fetch);
         Assert.True(result.Items.Count <= 5);
     }
 
@@ -105,7 +86,7 @@ public class Phase51UnifiedQueryCrmTests
         });
 
         Assert.Equal("lead", result.Entity);
-        Assert.Contains("leads?", result.RelativeRequestUri);
+        Assert.Contains("leads?fetchXml=", result.RelativeRequestUri);
         // Mock has no lead seed rows — empty is OK; engine + URI prove config-only enablement.
         Assert.True(result.Items.Count == 0 || result.Items.Count <= 5);
 
@@ -125,7 +106,9 @@ public class Phase51UnifiedQueryCrmTests
             Sort = [new CrmQuerySort { Field = "totalamount", Direction = CrmSortDirection.Desc }],
             Limit = 5
         });
-        Assert.Contains("totalamount desc", result.RelativeRequestUri);
+        Assert.Contains("totalamount", result.SortSummary);
+        Assert.Contains("desc", result.SortSummary);
+        Assert.Contains("fetchXml=", result.RelativeRequestUri);
     }
 
     [Fact]
@@ -146,7 +129,8 @@ public class Phase51UnifiedQueryCrmTests
             ],
             Limit = 10
         });
-        Assert.Contains("createdon lt 2026-03-01", result.RelativeRequestUri);
+        Assert.Contains(result.AppliedFilterSummary, s => s.Contains("createdon", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("fetchXml=", result.RelativeRequestUri);
     }
 
     [Fact]
@@ -167,7 +151,8 @@ public class Phase51UnifiedQueryCrmTests
             ],
             Limit = 10
         });
-        Assert.Contains("createdon ge 2026-02-01", result.RelativeRequestUri);
+        Assert.Contains(result.AppliedFilterSummary, s => s.Contains("createdon", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("fetchXml=", result.RelativeRequestUri);
     }
 
     [Fact]

@@ -6,7 +6,9 @@ namespace CrmAiPoc.Api.Crm.Generic;
 public enum CrmQueryOperation
 {
     List = 0,
-    Count = 1
+    Count = 1,
+    /// <summary>Server-side aggregation via FetchXML (COUNT/SUM/AVG/MIN/MAX + groupBy).</summary>
+    Aggregate = 2
 }
 
 public enum CrmSortDirection
@@ -26,6 +28,13 @@ public sealed class CrmQueryPlan
     public IReadOnlyList<CrmQueryFilter> Filters { get; init; } = Array.Empty<CrmQueryFilter>();
     public CrmRelativeDateFilter? RelativeDate { get; init; }
     public IReadOnlyList<CrmQuerySort> Sort { get; init; } = Array.Empty<CrmQuerySort>();
+
+    /// <summary>
+    /// Optional re-sort of the returned list page only (after FetchXML order + top).
+    /// Used for two-stage requests: take latest N, then sort those N by amount.
+    /// </summary>
+    public IReadOnlyList<CrmQuerySort> ClientSideSort { get; init; } = Array.Empty<CrmQuerySort>();
+
     public int Limit { get; init; } = CrmQueryLimits.DefaultLimit;
 
     /// <summary>
@@ -34,6 +43,18 @@ public sealed class CrmQueryPlan
     /// </summary>
     public string? RelatedFromEntity { get; init; }
     public string? RelatedFromId { get; init; }
+
+    /// <summary>Aggregate functions for <see cref="CrmQueryOperation.Aggregate"/>.</summary>
+    public IReadOnlyList<CrmAggregateSpec> Aggregates { get; init; } = Array.Empty<CrmAggregateSpec>();
+
+    /// <summary>Group-by fields (optional dateGrouping) for aggregate queries.</summary>
+    public IReadOnlyList<CrmGroupBySpec> GroupBy { get; init; } = Array.Empty<CrmGroupBySpec>();
+
+    /// <summary>
+    /// Metadata-validated related-entity links (FetchXML link-entity).
+    /// Nested links enable bounded multi-hop joins (see <see cref="CrmQueryLimits.MaxLinkDepth"/>).
+    /// </summary>
+    public IReadOnlyList<CrmLinkSpec> Links { get; init; } = Array.Empty<CrmLinkSpec>();
 }
 
 public sealed class CrmQueryFilter
@@ -49,10 +70,34 @@ public sealed class CrmQuerySort
     public CrmSortDirection Direction { get; init; } = CrmSortDirection.Desc;
 }
 
+/// <summary>
+/// Date filter on an approved DateTime field. Prefer <see cref="Expression"/>;
+/// <see cref="Token"/> remains for legacy fixed tokens.
+/// </summary>
 public sealed class CrmRelativeDateFilter
 {
     public required string Field { get; init; }
-    public required RelativeDateToken Token { get; init; }
+
+    /// <summary>Legacy fixed token. Ignored when <see cref="Expression"/> is set.</summary>
+    public RelativeDateToken? Token { get; init; }
+
+    /// <summary>Structured date-range expression (absolute, last N months, this year, etc.).</summary>
+    public CrmDateRangeExpression? Expression { get; init; }
+
+    public CrmDateRangeExpression GetExpression()
+    {
+        if (Expression is not null)
+        {
+            return Expression;
+        }
+
+        if (Token is RelativeDateToken token)
+        {
+            return DateRangeResolver.FromLegacyToken(token);
+        }
+
+        throw new InvalidOperationException("Date filter requires Expression or Token.");
+    }
 }
 
 public static class CrmQueryLimits
@@ -63,7 +108,26 @@ public static class CrmQueryLimits
     public const int DefaultLimit = 10;
     public const int MaxLimit = 50;
     public const int MinLimit = 1;
+    /// <summary>Legacy OData @$count ceiling formerly used for capped messaging.</summary>
     public const int DynamicsODataCountCeiling = 5000;
+
+    /// <summary>
+    /// Dynamics FetchXML aggregate evaluation limit (On-Prem / Online commonly 50,000).
+    /// Counts at or above this threshold are treated as possibly capped / non-exact.
+    /// </summary>
+    public const int DynamicsFetchXmlAggregateCountCeiling = 50000;
+    public const int MaxAggregates = 3;
+    public const int MaxGroupByFields = 3;
+    public const int MaxAggregateResultRows = 100;
+
+    /// <summary>Maximum nesting depth for link-entity chains (root = 0).</summary>
+    public const int MaxLinkDepth = 2;
+
+    /// <summary>Maximum total linked entities across the plan (not counting the root).</summary>
+    public const int MaxLinkedEntities = 3;
+
+    /// <summary>Max attributes projected from each linked entity.</summary>
+    public const int MaxLinkSelectFields = 5;
 }
 
 public sealed class GenericCrmQueryResult
@@ -91,7 +155,7 @@ public sealed class GenericCrmQueryResult
     public string? PrimaryNameAttribute { get; init; }
     public string? PrimaryIdAttribute { get; init; }
 
-    /// <summary>Validated $select OData property names used for the query.</summary>
+    /// <summary>Validated attribute keys used for projection / table columns (Web API JSON names).</summary>
     public IReadOnlyList<string> SelectFields { get; init; } = Array.Empty<string>();
 
     /// <summary>

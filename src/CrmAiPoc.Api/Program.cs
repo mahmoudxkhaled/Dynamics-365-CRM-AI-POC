@@ -4,12 +4,18 @@ using CrmAiPoc.Api.Crm.Dynamics;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
 using CrmAiPoc.Api.Crm.Validation;
+using CrmAiPoc.Api.Diagnostics;
 using CrmAiPoc.Api.Endpoints;
 using CrmAiPoc.Api.Security;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.Configure<AiDiagnosticsOptions>(
+    builder.Configuration.GetSection(AiDiagnosticsOptions.SectionName));
+builder.Services.AddSingleton<PipelineDiagnostics>();
+builder.Services.AddTransient<DynamicsCrmDiagnosticsHandler>();
 
 builder.Services.Configure<AiOptions>(options =>
 {
@@ -95,9 +101,11 @@ builder.Services.AddSingleton<ConversationStore>();
 builder.Services.AddSingleton<CrmArgumentValidator>();
 builder.Services.AddSingleton<CrmMetadataRegistry>();
 builder.Services.AddSingleton<EntityApprovalPolicy>();
+builder.Services.AddSingleton<CrmRelationshipLabeler>();
 builder.Services.AddSingleton<ICrmAiMetadataCatalogService, CrmAiMetadataCatalogService>();
 builder.Services.AddSingleton<ICrmAuthorizationService, CrmAuthorizationService>();
 builder.Services.AddSingleton<IGenericCrmQueryBuilder, GenericCrmQueryBuilder>();
+builder.Services.AddSingleton<FetchXmlAggregateBuilder>();
 builder.Services.AddScoped<CrmAiTools>();
 builder.Services.AddScoped<ChatService>();
 
@@ -113,6 +121,7 @@ builder.Services.AddHttpClient(DynamicsCrmHttp.HttpClientName, (sp, client) =>
 
         client.Timeout = TimeSpan.FromSeconds(60);
     })
+    .AddHttpMessageHandler<DynamicsCrmDiagnosticsHandler>()
     .ConfigurePrimaryHttpMessageHandler(sp =>
     {
         var opts = sp.GetRequiredService<IOptions<CrmOptions>>().Value;

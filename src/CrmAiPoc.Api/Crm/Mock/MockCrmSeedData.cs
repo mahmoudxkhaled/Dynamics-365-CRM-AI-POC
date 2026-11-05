@@ -206,6 +206,34 @@ public static class MockCrmSeedData
             StateCode = 0,
             StatusLabel = "Pending",
             StateLabel = "Active"
+        },
+        new CrmSalesOrder
+        {
+            SalesOrderId = Guid.Parse("b4444444-4444-4444-4444-444444444444"),
+            Name = "SO-Cairo Logistics Cancelled",
+            OrderNumber = "ORD-1004",
+            CustomerAccountId = CairoLogisticsId,
+            CreatedOn = DateTimeOffset.UtcNow.AddMonths(-2),
+            ModifiedOn = DateTimeOffset.UtcNow.AddMonths(-2).AddDays(1),
+            TotalAmount = 4100m,
+            StatusCode = 100001,
+            StateCode = 2,
+            StatusLabel = "Complete",
+            StateLabel = "Canceled"
+        },
+        new CrmSalesOrder
+        {
+            SalesOrderId = Guid.Parse("b5555555-5555-5555-5555-555555555555"),
+            Name = "SO-Delta Older",
+            OrderNumber = "ORD-1005",
+            CustomerAccountId = DeltaServicesId,
+            CreatedOn = DateTimeOffset.UtcNow.AddMonths(-4),
+            ModifiedOn = DateTimeOffset.UtcNow.AddMonths(-4),
+            TotalAmount = 9900m,
+            StatusCode = 1,
+            StateCode = 0,
+            StatusLabel = "New",
+            StateLabel = "Active"
         }
     ];
 }

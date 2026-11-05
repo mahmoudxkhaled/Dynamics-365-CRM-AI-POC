@@ -4,7 +4,7 @@ namespace CrmAiPoc.Api.Models;
 
 public sealed class ChatRequestDto
 {
-    /// <summary>Natural-language question in English or Arabic.</summary>
+    /// <summary>Natural-language CRM question in English.</summary>
     [Required]
     [MaxLength(4000)]
     public string Message { get; set; } = string.Empty;

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using CrmAiPoc.Api.Crm.Generic;
 
 namespace CrmAiPoc.Api.Ai;
@@ -17,6 +18,13 @@ public sealed class CrmAiTools
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
+    private static readonly JsonSerializerOptions DateRangeSerializeOptions = new()
+    {
+        WriteIndented = false,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
     private readonly IGenericCrmRepository _genericCrm;
     private readonly ILogger<CrmAiTools> _logger;
 
@@ -28,20 +36,54 @@ public sealed class CrmAiTools
         _logger = logger;
     }
 
-    [Description("THE only CRM read tool. Query ANY approved entity (account, contact, salesorder, lead, …). Supports list/count/filters/sort/dates/limit and one-hop relatedFromEntity+relatedFromId. Pass structured plan only — never OData/SQL/FetchXML.")]
+    [Description(
+        "THE only CRM read tool. Query approved entities from the catalog. " +
+        "Supports list/count/aggregate with filters/sort/dates/limit, aggregatesJson+groupByJson, " +
+        "relatedFromEntity+relatedFromId GUID filters, and linksJson for related-entity joins " +
+        "(max depth 2 / max 3 linked entities). Pass a complete structured plan — never OData/SQL/FetchXML. " +
+        "Include every filter, date range, field, sort, and relationship the user requested.")]
     public async Task<string> query_crm(
-        [Description("Approved entity logical name: account | contact | salesorder | lead (or configured aliases).")] string entity,
-        [Description("list or count")] string operation = "list",
-        [Description("Optional JSON array of field names to select.")] string? selectJson = null,
-        [Description("JSON array of filters: [{field,operator,value}] max 3.")] string? filtersJson = null,
-        [Description("Date field for relative range.")] string? relativeDateField = null,
-        [Description("last_calendar_month | this_calendar_month | this_week | last_7_days | last_30_days")] string? relativeDateToken = null,
+        [Description("Approved entity logical name from the catalog (or configured alias).")] string entity,
+        [Description("list | count | aggregate — choose from the user's requested result shape.")] string operation = "list",
+        [Description("Optional JSON array of field names to select (list only).")] string? selectJson = null,
+        [Description(
+            "JSON array of filters: [{field,operator,value}] max 3. " +
+            "DateTime fields accept ISO values with operators eq|ne|gt|ge|lt|le.")] string? filtersJson = null,
+        [Description("Approved DateTime field for a structured date range (e.g. createdon, modifiedon).")]
+        string? relativeDateField = null,
+        [Description(
+            "Legacy fixed tokens only: last_calendar_month | this_calendar_month | this_week | " +
+            "last_7_days | last_30_days | last_6_calendar_months. Prefer dateRange for arbitrary periods.")]
+        string? relativeDateToken = null,
+        [Description(
+            "Preferred structured date range object used with relativeDateField. " +
+            "ALWAYS set kind. Canonical example for full year 2025: " +
+            "{\"kind\":\"calendar_year\",\"year\":2025}. " +
+            "Kinds: absolute (start,endExclusive ISO), last_n_days|last_n_weeks|last_n_calendar_months|" +
+            "last_n_rolling_months|last_n_years (n), this_calendar_month|this_calendar_quarter|" +
+            "this_calendar_year (YTD)|this_week, previous_calendar_month|previous_calendar_quarter|" +
+            "previous_calendar_year, calendar_year (year), calendar_quarter (year,quarter), " +
+            "calendar_month_range (year,monthStart,monthEnd). Half-open [start,endExclusive). " +
+            "Backend resolves relative kinds with the business timezone. " +
+            "If the user asks for an ambiguous period (e.g. 'six months within 2025' without which months), ask clarification instead of guessing.")]
+        QueryCrmDateRangeArg? dateRange = null,
+        [Description(
+            "Legacy string form of dateRange (JSON object text). Prefer the typed dateRange argument. " +
+            "Same shape: {\"kind\":\"calendar_year\",\"year\":2025}.")]
+        string? dateRangeJson = null,
         [Description("JSON array of sorts: [{field,direction}] max 2.")] string? sortJson = null,
-        [Description("Sort field logical name. For highest/lowest-value sales orders use totalamount.")] string? sortField = null,
-        [Description("asc or desc. Use desc for highest-value, asc for lowest-value.")] string? sortDirection = "desc",
+        [Description("Sort field logical name from approved metadata.")] string? sortField = null,
+        [Description("asc or desc.")] string? sortDirection = "desc",
         [Description("Max rows 1-50 for list.")] int limit = 10,
         [Description("Parent entity for one-hop relationship filter.")] string? relatedFromEntity = null,
         [Description("Parent record GUID for one-hop relationship filter.")] string? relatedFromId = null,
+        [Description("JSON array of aggregates for reports: [{function:count|sum|avg|min|max, field, alias}] max 3. Required when operation=aggregate.")] string? aggregatesJson = null,
+        [Description("JSON array of groupBy for reports: [{field, alias, dateGrouping?:year|month|day|week|quarter}] max 3. For monthly series across a year, include dateGrouping month (backend adds year context when needed).")] string? groupByJson = null,
+        [Description(
+            "JSON array of related-entity links: " +
+            "[{entity, purpose?:businessLabel, relationship?:exactCatalogSchemaName, joinType?:outer|inner, alias?, select?:[fields], filters?:[{field,operator,value}], links?:[nested]}]. " +
+            "Prefer purpose from catalog rels[].lbl (e.g. Customer Account). Only set relationship when copying an exact catalog SchemaName — never invent SchemaNames. Nested links max depth 2.")]
+        string? linksJson = null,
         CancellationToken cancellationToken = default)
     {
         _logger.LogInformation(
@@ -49,6 +91,8 @@ public sealed class CrmAiTools
             entity,
             operation,
             limit);
+
+        var resolvedDateRangeJson = ResolveDateRangeJson(dateRange, dateRangeJson);
 
         var parsed = CrmQueryPlanParser.Parse(
             entity,
@@ -62,7 +106,11 @@ public sealed class CrmAiTools
             sortDirection,
             limit,
             relatedFromEntity,
-            relatedFromId);
+            relatedFromId,
+            aggregatesJson,
+            groupByJson,
+            linksJson,
+            dateRangeJson: resolvedDateRangeJson);
         if (!parsed.Success || parsed.Plan is null)
         {
             return Fail(parsed.Error ?? "Invalid query_crm arguments.");
@@ -103,9 +151,27 @@ public sealed class CrmAiTools
         return json;
     }
 
-    private string Fail(string message)
+    /// <summary>
+    /// Prefer typed <paramref name="dateRange"/>; fall back to legacy JSON string.
+    /// </summary>
+    internal static string? ResolveDateRangeJson(QueryCrmDateRangeArg? dateRange, string? dateRangeJson)
     {
-        _logger.LogInformation("Function execution result: failure — {Message}", message);
-        return JsonSerializer.Serialize(new { error = true, message }, JsonOptions);
+        if (dateRange is not null &&
+            (dateRange.Kind is not null ||
+             dateRange.N is not null ||
+             dateRange.Year is not null ||
+             dateRange.Quarter is not null ||
+             dateRange.MonthStart is not null ||
+             dateRange.MonthEnd is not null ||
+             dateRange.Start is not null ||
+             dateRange.EndExclusive is not null))
+        {
+            return JsonSerializer.Serialize(dateRange, DateRangeSerializeOptions);
+        }
+
+        return string.IsNullOrWhiteSpace(dateRangeJson) ? null : dateRangeJson;
     }
+
+    private static string Fail(string message) =>
+        JsonSerializer.Serialize(new { error = true, message }, JsonOptions);
 }

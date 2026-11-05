@@ -9,4 +9,10 @@ public sealed class AiOptions
 
     /// <summary>Groq (default), Gemini, or OpenAI.</summary>
     public string Provider { get; set; } = "Groq";
+
+    /// <summary>
+    /// Max seconds to wait for the AI provider tool-call response.
+    /// On timeout, chat falls back to deterministic entity resolution when possible.
+    /// </summary>
+    public int ProviderTimeoutSeconds { get; set; } = 25;
 }

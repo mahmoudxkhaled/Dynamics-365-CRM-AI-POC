@@ -1,0 +1,146 @@
+Using launch settings from D:\CRM POC\src\CrmAiPoc.Api\Properties\launchSettings.json...
+info: CrmAiPoc.Api[0]
+      CRM AI POC starting. AiProvider=Groq, Model=openai/gpt-oss-120b, CrmProvider=Dynamics365, LiveIntegration=True
+dbug: Microsoft.Extensions.Hosting.Internal.Host[1]
+      Hosting starting
+info: CrmAiPoc.Api.Crm.Metadata.CrmMetadataWarmupHostedService[0]
+      CRM metadata seeds ready (4 entities). Starting live warm-up…
+info: CrmAiPoc.Api.Diagnostics.PipelineDiagnostics[0]
+      ==================================================
+      [CRM METADATA] CorrelationId: (none)
+      ==================================================
+      MetadataDiscovery: cache MISS / refresh starting
+      Targets: [account, contact, salesorder, lead]
+      Source: Live CRM EntityDefinitions
+info: CrmAiPoc.Api.Crm.Dynamics.DynamicsCrmHttp[0]
+      Dynamics GET (read-only): Path=EntityDefinitions(LogicalName='account')?$select=LogicalName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute,DisplayName, AuthMode=windows-default-credentials, Annotations=False
+info: System.Net.Http.HttpClient.DynamicsCrm.LogicalHandler[100]
+      Start processing HTTP request GET https://ecrmdev9.te.eg/ECRMBSS/api/data/v9.1/EntityDefinitions(LogicalName='account')?$select=LogicalName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute,DisplayName
+info: CrmAiPoc.Api.Diagnostics.PipelineDiagnostics[0]
+      ==================================================
+      [CRM ODATA REQUEST] CorrelationId: (none)
+      ==================================================
+      Method: GET
+      Category: Metadata discovery
+      Endpoint: https://ecrmdev9.te.eg/ECRMBSS/api/data/v9.1/EntityDefinitions(LogicalName='account')?$select=LogicalName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute,DisplayName
+      Path: /ECRMBSS/api/data/v9.1/EntityDefinitions(LogicalName='account')
+      $select: LogicalName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute,DisplayName
+      $filter: (none)
+      $expand: (none)
+      Inspected: EntityDefinitions
+      StartTimeUtc: 2026-11-04 16:17:53Z
+info: CrmAiPoc.Api.Diagnostics.PipelineDiagnostics[0]
+      ==================================================
+      [CRM HTTP REQUEST] CorrelationId: (none)
+      ==================================================
+      Method: GET
+      Category: Metadata discovery
+      BaseUrl: https://ecrmdev9.te.eg
+      Path: /ECRMBSS/api/data/v9.1/EntityDefinitions(LogicalName='account')
+      Query: $select=LogicalName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute,DisplayName
+      FinalUrlSanitized: https://ecrmdev9.te.eg/ECRMBSS/api/data/v9.1/EntityDefinitions(LogicalName='account')?$select=LogicalName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute,DisplayName
+      StartTimeUtc: 2026-11-04 16:17:53Z
+      AuthHeaders: [redacted]
+info: System.Net.Http.HttpClient.DynamicsCrm.ClientHandler[100]
+      Sending HTTP request GET https://ecrmdev9.te.eg/ECRMBSS/api/data/v9.1/EntityDefinitions(LogicalName='account')?$select=LogicalName,EntitySetName,PrimaryIdAttribute,PrimaryNameAttribute,DisplayName
+fail: Microsoft.Extensions.Hosting.Internal.Host[11]
+      Hosting failed to start
+      System.IO.IOException: Failed to bind to address http://127.0.0.1:5138: address already in use.
+       ---> Microsoft.AspNetCore.Connections.AddressInUseException: Only one usage of each socket address (protocol/network address/port) is normally permitted.
+       ---> System.Net.Sockets.SocketException (10048): Only one usage of each socket address (protocol/network address/port) is normally permitted.
+         at System.Net.Sockets.Socket.UpdateStatusAfterSocketErrorAndThrowException(SocketError error, Boolean disconnectOnFailure, String callerName)
+         at System.Net.Sockets.Socket.DoBind(EndPoint endPointSnapshot, SocketAddress socketAddress)
+         at System.Net.Sockets.Socket.Bind(EndPoint localEP)
+         at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportOptions.CreateDefaultBoundListenSocket(EndPoint endpoint)
+         at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketConnectionListener.Bind()
+         --- End of inner exception stack trace ---
+         at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketConnectionListener.Bind()
+         at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportFactory.BindAsync(EndPoint endpoint, CancellationToken cancellationToken)
+         at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure.TransportManager.BindAsync(EndPoint endPoint, ConnectionDelegate connectionDelegate, EndpointConfig endpointConfig, CancellationToken cancellationToken)
+         at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.<>c__DisplayClass28_0`1.<<StartAsync>g__OnBind|0>d.MoveNext()
+      --- End of stack trace from previous location ---
+         at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.BindEndpointAsync(ListenOptions endpoint, AddressBindContext context, CancellationToken cancellationToken)
+         --- End of inner exception stack trace ---
+         at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.BindEndpointAsync(ListenOptions endpoint, AddressBindContext context, CancellationToken cancellationToken)
+         at Microsoft.AspNetCore.Server.Kestrel.Core.LocalhostListenOptions.BindAsync(AddressBindContext context, CancellationToken cancellationToken)
+         at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.AddressesStrategy.BindAsync(AddressBindContext context, CancellationToken cancellationToken)
+         at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.BindAsync(ListenOptions[] listenOptions, AddressBindContext context, Func`2 useHttps, CancellationToken cancellationToken)
+         at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.BindAsync(CancellationToken cancellationToken)
+         at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.StartAsync[TContext](IHttpApplication`1 application, CancellationToken cancellationToken)
+         at Microsoft.AspNetCore.Hosting.GenericWebHostService.StartAsync(CancellationToken cancellationToken)
+         at Microsoft.Extensions.Hosting.Internal.Host.<StartAsync>b__15_1(IHostedService service, CancellationToken token)
+         at Microsoft.Extensions.Hosting.Internal.Host.ForeachService[T](IEnumerable`1 services, CancellationToken token, Boolean concurrent, Boolean abortOnFirstException, List`1 exceptions, Func`3 operation)
+info: CrmAiPoc.Api.Diagnostics.PipelineDiagnostics[0]
+      ==================================================
+      [CRM HTTP RESPONSE] CorrelationId: (none)
+      ==================================================
+      Category: Metadata discovery
+      Status: (transport failure)
+      Success: False
+      DurationMs: 66
+      ExceptionType: TaskCanceledException
+      Message: A task was canceled.
+      Note: CRM business result payloads are never logged here.
+warn: CrmAiPoc.Api.Crm.Metadata.DynamicsCrmMetadataService[0]
+      Metadata discovery failed for account; using seed/stub if available.
+      System.Threading.Tasks.TaskCanceledException: A task was canceled.
+       ---> System.Threading.Tasks.TaskCanceledException: A task was canceled.
+         at System.Threading.Tasks.TaskCompletionSourceWithCancellation`1.WaitWithCancellationAsync(CancellationToken cancellationToken)
+         at System.Net.Http.HttpConnectionPool.SendWithVersionDetectionAndRetryAsync(HttpRequestMessage request, Boolean async, Boolean doRequestAuth, CancellationToken cancellationToken)
+         at System.Net.Http.AuthenticationHelper.SendWithAuthAsync(HttpRequestMessage request, Uri authUri, Boolean async, ICredentials credentials, Boolean preAuthenticate, Boolean isProxyAuth, Boolean doRequestAuth, HttpConnectionPool pool, CancellationToken cancellationToken)
+         at System.Net.Http.RedirectHandler.SendAsync(HttpRequestMessage request, Boolean async, CancellationToken cancellationToken)
+         at Microsoft.Extensions.Http.Logging.LoggingHttpMessageHandler.<SendCoreAsync>g__Core|5_0(HttpRequestMessage request, Boolean useAsync, CancellationToken cancellationToken)
+         at CrmAiPoc.Api.Diagnostics.DynamicsCrmDiagnosticsHandler.SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) in D:\CRM POC\src\CrmAiPoc.Api\Diagnostics\DynamicsCrmDiagnosticsHandler.cs:line 87
+         at Microsoft.Extensions.Http.Logging.LoggingScopeHttpMessageHandler.<SendCoreAsync>g__Core|5_0(HttpRequestMessage request, Boolean useAsync, CancellationToken cancellationToken)
+         at System.Net.Http.HttpClient.<SendAsync>g__Core|83_0(HttpRequestMessage request, HttpCompletionOption completionOption, CancellationTokenSource cts, Boolean disposeCts, CancellationTokenSource pendingRequestsCts, CancellationToken originalCancellationToken)
+         --- End of inner exception stack trace ---
+         at System.Net.Http.HttpClient.HandleFailure(Exception e, Boolean telemetryStarted, HttpResponseMessage response, CancellationTokenSource cts, CancellationToken cancellationToken, CancellationTokenSource pendingRequestsCts)
+         at System.Net.Http.HttpClient.<SendAsync>g__Core|83_0(HttpRequestMessage request, HttpCompletionOption completionOption, CancellationTokenSource cts, Boolean disposeCts, CancellationTokenSource pendingRequestsCts, CancellationToken originalCancellationToken)
+         at CrmAiPoc.Api.Crm.Dynamics.DynamicsCrmHttp.GetAsync(String relativePath, Boolean includeAnnotations, CancellationToken cancellationToken) in D:\CRM POC\src\CrmAiPoc.Api\Crm\Dynamics\DynamicsCrmHttp.cs:line 78
+         at CrmAiPoc.Api.Crm.Metadata.DynamicsCrmMetadataService.DiscoverEntityAsync(String logicalName, CancellationToken cancellationToken) in D:\CRM POC\src\CrmAiPoc.Api\Crm\Metadata\DynamicsCrmMetadataService.cs:line 268
+         at CrmAiPoc.Api.Crm.Metadata.DynamicsCrmMetadataService.RefreshAsync(String logicalName, CancellationToken cancellationToken) in D:\CRM POC\src\CrmAiPoc.Api\Crm\Metadata\DynamicsCrmMetadataService.cs:line 174
+warn: CrmAiPoc.Api.Crm.Metadata.CrmMetadataWarmupHostedService[0]
+      CRM metadata warm-up failed; chat will load metadata on demand.
+      System.AggregateException: An error occurred while writing to logger(s). (Cannot access a disposed object.
+      Object name: 'EventLogInternal'.)
+       ---> System.ObjectDisposedException: Cannot access a disposed object.
+      Object name: 'EventLogInternal'.
+         at System.Diagnostics.EventLogInternal.OpenForWrite(String currentMachineName)
+         at System.Diagnostics.EventLogInternal.InternalWriteEvent(UInt32 eventID, UInt16 category, EventLogEntryType type, String[] strings, Byte[] rawData, String currentMachineName)
+         at System.Diagnostics.EventLogInternal.WriteEvent(EventInstance instance, Byte[] data, Object[] values)
+         at Microsoft.Extensions.Logging.EventLog.WindowsEventLog.WriteEntry(String message, EventLogEntryType type, Int32 eventID, Int16 category)
+         at Microsoft.Extensions.Logging.EventLog.EventLogLogger.WriteMessage(String message, EventLogEntryType eventLogEntryType, Int32 eventId)
+         at Microsoft.Extensions.Logging.EventLog.EventLogLogger.Log[TState](LogLevel logLevel, EventId eventId, TState state, Exception exception, Func`3 formatter)
+         at Microsoft.Extensions.Logging.Logger.<Log>g__LoggerLog|14_0[TState](LogLevel logLevel, EventId eventId, ILogger logger, Exception exception, Func`3 formatter, List`1& exceptions, TState& state)
+         --- End of inner exception stack trace ---
+         at Microsoft.Extensions.Logging.Logger.ThrowLoggingError(List`1 exceptions)
+         at Microsoft.Extensions.Logging.Logger.Log[TState](LogLevel logLevel, EventId eventId, TState state, Exception exception, Func`3 formatter)
+         at Microsoft.Extensions.Logging.Logger`1.Microsoft.Extensions.Logging.ILogger.Log[TState](LogLevel logLevel, EventId eventId, TState state, Exception exception, Func`3 formatter)
+         at Microsoft.Extensions.Logging.LoggerExtensions.Log(ILogger logger, LogLevel logLevel, EventId eventId, Exception exception, String message, Object[] args)
+         at Microsoft.Extensions.Logging.LoggerExtensions.Log(ILogger logger, LogLevel logLevel, Exception exception, String message, Object[] args)
+         at Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(ILogger logger, Exception exception, String message, Object[] args)
+         at CrmAiPoc.Api.Crm.Metadata.DynamicsCrmMetadataService.RefreshAsync(String logicalName, CancellationToken cancellationToken) in D:\CRM POC\src\CrmAiPoc.Api\Crm\Metadata\DynamicsCrmMetadataService.cs:line 187
+         at CrmAiPoc.Api.Crm.Metadata.DynamicsCrmMetadataService.EnsureApprovedEntitiesLoadedAsync(CancellationToken cancellationToken) in D:\CRM POC\src\CrmAiPoc.Api\Crm\Metadata\DynamicsCrmMetadataService.cs:line 90
+         at CrmAiPoc.Api.Crm.Metadata.CrmMetadataWarmupHostedService.ExecuteAsync(CancellationToken stoppingToken) in D:\CRM POC\src\CrmAiPoc.Api\Crm\Metadata\CrmMetadataWarmupHostedService.cs:line 46
+fail: Microsoft.Extensions.Hosting.Internal.Host[9]
+      BackgroundService failed
+      System.AggregateException: An error occurred while writing to logger(s). (Cannot access a disposed object.
+      Object name: 'EventLogInternal'.)
+       ---> System.ObjectDisposedException: Cannot access a disposed object.
+      Object name: 'EventLogInternal'.
+         at System.Diagnostics.EventLogInternal.OpenForWrite(String currentMachineName)
+         at System.Diagnostics.EventLogInternal.InternalWriteEvent(UInt32 eventID, UInt16 category, EventLogEntryType type, String[] strings, Byte[] rawData, String currentMachineName)
+         at System.Diagnostics.EventLogInternal.WriteEvent(EventInstance instance, Byte[] data, Object[] values)
+         at Microsoft.Extensions.Logging.EventLog.WindowsEventLog.WriteEntry(String message, EventLogEntryType type, Int32 eventID, Int16 category)
+         at Microsoft.Extensions.Logging.EventLog.EventLogLogger.WriteMessage(String message, EventLogEntryType eventLogEntryType, Int32 eventId)
+         at Microsoft.Extensions.Logging.EventLog.EventLogLogger.Log[TState](LogLevel logLevel, EventId eventId, TState state, Exception exception, Func`3 formatter)
+         at Microsoft.Extensions.Logging.Logger.<Log>g__LoggerLog|14_0[TState](LogLevel logLevel, EventId eventId, ILogger logger, Exception exception, Func`3 formatter, List`1& exceptions, TState& state)
+         --- End of inner exception stack trace ---
+         at Microsoft.Extensions.Logging.Logger.ThrowLoggingError(List`1 exceptions)
+         at Microsoft.Extensions.Logging.Logger.Log[TState](LogLevel logLevel, EventId eventId, TState state, Exception exception, Func`3 formatter)
+         at Microsoft.Extensions.Logging.Logger`1.Microsoft.Extensions.Logging.ILogger.Log[TState](LogLevel logLevel, EventId eventId, TState state, Exception exception, Func`3 formatter)
+         at Microsoft.Extensions.Logging.LoggerExtensions.Log(ILogger logger, LogLevel logLevel, EventId eventId, Exception exception, String message, Object[] args)
+         at Microsoft.Extensions.Logging.LoggerExtensions.Log(ILogger logger, LogLevel logLevel, Exception exception, String message, Object[] args)
+         at Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(ILogger logger, Exception exception, String message, Object[] args)
+         at CrmAiPoc.Api.Crm.Metadata.CrmMetadataWarmupHostedService.ExecuteAsync(CancellationToken stoppingToken) in D:\CRM POC\src\CrmAiPoc.Api\Crm\Metadata\CrmMetadataWarmupHostedService.cs:line 64
+         at Microsoft.Extensions.Hosting.Internal.Host.TryExecuteBackgroundServiceAsync(BackgroundService backgroundService)

@@ -28,10 +28,12 @@ public class CrmAiMetadataCatalogTests
             BusinessTimeZoneId = "Africa/Cairo",
             EntityAliases = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
             {
-                ["account"] = ["customers"],
-                ["lead"] = ["leads"]
+                ["account"] = ["accounts", "customers", "customer account", "customer accounts"],
+                ["contact"] = ["contacts", "contact persons", "primary contact", "primary contacts"],
+                ["salesorder"] = ["sales order", "sales orders", "orders"],
+                ["lead"] = ["leads", "prospects"]
             }
-        };
+};
         var opts = Options.Create(options);
         var policy = new EntityApprovalPolicy(opts);
         var registry = new CrmMetadataRegistry();
@@ -39,6 +41,7 @@ public class CrmAiMetadataCatalogTests
         var catalog = new CrmAiMetadataCatalogService(
             registry,
             policy,
+            new CrmRelationshipLabeler(opts),
             opts,
             NullLogger<CrmAiMetadataCatalogService>.Instance);
         return (options, policy, metadata, catalog);
@@ -220,6 +223,7 @@ public class CrmAiMetadataCatalogTests
         var catalog = new CrmAiMetadataCatalogService(
             registry,
             policy,
+            new CrmRelationshipLabeler(options),
             options,
             NullLogger<CrmAiMetadataCatalogService>.Instance);
 
@@ -274,7 +278,7 @@ public class CrmAiMetadataCatalogTests
         var metadata = new MockCrmMetadataService(registry, policy);
         var builder = new GenericCrmQueryBuilder(options);
         var auth = new CrmAuthorizationService(options, NullLogger<CrmAuthorizationService>.Instance, policy);
-        var repo = new MockGenericCrmRepository(metadata, policy, builder, auth);
+        var repo = new MockGenericCrmRepository(metadata, policy, builder, new FetchXmlAggregateBuilder(), auth);
         var tools = new CrmAiTools(repo, NullLogger<CrmAiTools>.Instance);
 
         var json = await tools.query_crm(entity: "salesorder", operation: "list", limit: 3);

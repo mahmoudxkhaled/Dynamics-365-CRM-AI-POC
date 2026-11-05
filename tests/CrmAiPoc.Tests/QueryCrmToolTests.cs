@@ -23,7 +23,7 @@ public class QueryCrmToolTests
         var metadata = new MockCrmMetadataService(registry, policy);
         var builder = new GenericCrmQueryBuilder(options);
         var auth = new CrmAuthorizationService(options, NullLogger<CrmAuthorizationService>.Instance, policy);
-        var repo = new MockGenericCrmRepository(metadata, policy, builder, auth);
+        var repo = new MockGenericCrmRepository(metadata, policy, builder, new FetchXmlAggregateBuilder(), auth);
         return new CrmAiTools(repo, NullLogger<CrmAiTools>.Instance);
     }
 

@@ -43,14 +43,17 @@ public sealed class CrmOptions
     /// </summary>
     public bool AllowSendApprovedMetadataCatalogToAi { get; set; }
 
-    /// <summary>Max approved entities included in the AI metadata catalog.</summary>
-    public int AiMetadataCatalogMaxEntities { get; set; } = 8;
+    /// <summary>
+    /// Max entities expanded with attributes/relationships in the AI catalog detail section.
+    /// All approved entities remain in the compact index regardless of this cap.
+    /// </summary>
+    public int AiMetadataCatalogMaxEntities { get; set; } = 12;
 
-    /// <summary>Max attributes per entity in the AI metadata catalog.</summary>
-    public int AiMetadataCatalogMaxAttributesPerEntity { get; set; } = 20;
+    /// <summary>Max attributes per detailed entity in the AI metadata catalog.</summary>
+    public int AiMetadataCatalogMaxAttributesPerEntity { get; set; } = 16;
 
     /// <summary>Hard character budget for the serialized catalog block sent to the AI.</summary>
-    public int AiMetadataCatalogMaxChars { get; set; } = 6000;
+    public int AiMetadataCatalogMaxChars { get; set; } = 12000;
 
     /// <summary>
     /// When true (default), load approved entity metadata from CRM/Mock in a background hosted service at startup
@@ -78,18 +81,57 @@ public sealed class CrmOptions
     public List<string> ApprovedEntities { get; set; } = ["account", "contact", "salesorder", "lead"];
 
     /// <summary>
+    /// Optional relationship SchemaName allowlist for AI link-entity joins.
+    /// Empty (default) = all discovered non-M2M relationships between ApprovedEntities are joinable.
+    /// Non-empty = additional security restriction on top of ApprovedEntities.
+    /// </summary>
+    public List<string> ApprovedRelationships { get; set; } = [];
+
+    /// <summary>
     /// Optional business aliases per entity logical name for natural-language routing hints.
     /// </summary>
     public Dictionary<string, List<string>> EntityAliases { get; set; } = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["account"] = ["accounts", "customers", "عملاء", "حسابات", "عميل"],
-        ["contact"] = ["contacts", "جهات اتصال", "اتصل"],
-        ["salesorder"] = ["sales order", "sales orders", "أوامر البيع", "امر بيع", "أمر بيع", "اوادر"],
-        ["lead"] = ["leads", "عميل محتمل", "عملاء محتملين", "ليد"]
+        ["account"] =
+        [
+            "accounts", "customers", "customer account", "customer accounts"
+        ],
+        ["contact"] =
+        [
+            "contacts", "contact persons", "primary contact", "primary contacts"
+        ],
+        ["salesorder"] =
+        [
+            "sales order", "sales orders", "orders"
+        ],
+        ["lead"] = ["leads", "prospects"]
     };
 
     /// <summary>Seconds to cache discovered entity metadata before refresh.</summary>
     public int MetadataCacheSeconds { get; set; } = 3600;
+
+    /// <summary>
+    /// When true (default), expired metadata may still be served while a background refresh runs
+    /// (stale-while-revalidate). Chat stays fast; live CRM remains authoritative after refresh.
+    /// </summary>
+    public bool MetadataStaleWhileRevalidate { get; set; } = true;
+
+    /// <summary>
+    /// Optional friendly labels for relationship SchemaNames used in clarification UX.
+    /// Key = SchemaName, Value = English business description.
+    /// </summary>
+    public Dictionary<string, string> RelationshipLabels { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["te_account_salesorder_customeraccountid"] = "Customer Account",
+            ["order_customer_accounts"] = "Potential Customer (Account)",
+            ["te_account_salesorder_branchaccountid"] = "Branch Account",
+            ["te_account_salesorder_customerbranchaccountid"] = "Customer Branch Account",
+            ["te_account_salesorder_calculated"] = "Calculated Account",
+            ["contact_customer_accounts"] = "Account Contacts",
+            ["account_primary_contact"] = "Primary Contact",
+            ["order_customer_contacts"] = "Potential Customer (Contact)"
+        };
 
     public bool HasExplicitNetworkCredentials =>
         !string.IsNullOrWhiteSpace(Username) && !string.IsNullOrWhiteSpace(Password);

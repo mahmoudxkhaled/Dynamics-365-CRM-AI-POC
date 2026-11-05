@@ -8,3 +8,61 @@
 .chat-panel {
   flex: 1;
 }
+
+.suggestions {
+  margin: auto 0 8px;
+  padding: 8px 4px 12px;
+  max-width: 720px;
+  width: 100%;
+  align-self: center;
+}
+
+.suggestions-title {
+  margin: 0 0 10px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.suggestions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.suggestion-chip {
+  display: block;
+  width: 100%;
+  text-align: right;
+  padding: 10px 12px;
+  border-radius: var(--we-radius-sm, 8px);
+  border: 1px solid var(--border);
+  background: var(--we-white);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.86rem;
+  line-height: 1.4;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.suggestion-chip:hover:not(:disabled) {
+  border-color: var(--we-purple-tint);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.suggestion-chip:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+@media (max-width: 480px) {
+  .suggestions-grid {
+    grid-template-columns: 1fr;
+  }
+}

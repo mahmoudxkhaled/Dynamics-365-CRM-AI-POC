@@ -46,10 +46,6 @@ const COLUMN_PRIORITY = [
   '_parentcustomerid_value'
 ];
 
-export function hasArabic(text: string | null | undefined): boolean {
-  return /[\u0600-\u06FF]/.test(text || '');
-}
-
 export function isGuidLike(value: unknown): boolean {
   return (
     typeof value === 'string' &&
@@ -346,8 +342,10 @@ export function shouldShowTable(
   structured: CrmStructuredData | null | undefined,
   rows: Record<string, unknown>[]
 ): boolean {
+  const op = (structured?.operation || '').toLowerCase();
+  const tableOp = op === 'list' || op === 'aggregate';
   return (
     rows.length > 0 ||
-    !!(normalizeMetadataColumns(structured) && structured?.operation === 'list')
+    !!(normalizeMetadataColumns(structured) && tableOp)
   );
 }

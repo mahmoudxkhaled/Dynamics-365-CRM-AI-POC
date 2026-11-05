@@ -5,48 +5,45 @@ using CrmAiPoc.Api.Crm.Generic;
 namespace CrmAiPoc.Api.Ai;
 
 /// <summary>
-/// Entity-independent local formatter for generic CRM query results (Arabic/English).
+/// Entity-independent local formatter for generic CRM query results (English).
 /// </summary>
 public static class GenericCrmReplyFormatter
 {
     public static string Format(GenericCrmQueryResult result, string languageHint, Guid? crmUserId = null)
     {
-        var ar = languageHint.Equals("ar", StringComparison.OrdinalIgnoreCase);
+        _ = languageHint;
         var sb = new StringBuilder();
 
         if (result.Operation == CrmQueryOperation.Count)
         {
             if (result.Count is null)
             {
-                return ar
-                    ? (result.Message ?? $"تعذر حساب عدد سجلات {result.Entity}.")
-                    : (result.Message ?? $"Could not count {result.Entity} records.");
+                return result.Message ?? $"Could not count {result.Entity} records.";
             }
 
             if (result.CountMayBeCapped || result.CountLimitExceededAnnotation)
             {
-                sb.AppendLine(ar
-                    ? $"عدد سجلات {result.Entity} المطابقة هو على الأقل {result.Count} — ليس عدداً دقيقاً (Dynamics totalrecordcountlimitexceeded / سقف العد)."
-                    : $"Matching {result.Entity} count is at least {result.Count} — not an exact total (Dynamics totalrecordcountlimitexceeded / count ceiling).");
+                sb.AppendLine(
+                    $"Matching {result.Entity} count is at least {result.Count} — not an exact total (Dynamics totalrecordcountlimitexceeded / count ceiling).");
             }
             else
             {
-                sb.AppendLine(ar
-                    ? $"عدد سجلات {result.Entity} المطابقة: {result.Count}."
-                    : $"Matching {result.Entity} count: {result.Count}.");
+                sb.AppendLine($"Matching {result.Entity} count: {result.Count}.");
             }
+        }
+        else if (result.Operation == CrmQueryOperation.Aggregate)
+        {
+            sb.AppendLine(FormatAggregate(result));
         }
         else if (result.Items.Count == 0)
         {
-            sb.AppendLine(ar
-                ? $"لا توجد سجلات {result.Entity} مطابقة ضمن صلاحياتك الحالية."
-                : $"No {result.Entity} records matched for the current authorized CRM identity.");
+            sb.AppendLine(
+                $"No {result.Entity} records matched for the current authorized CRM identity.");
         }
         else
         {
-            sb.AppendLine(ar
-                ? $"تم جلب {result.Items.Count} سجل/سجلات من {result.Entity} ({result.ProviderName}):"
-                : $"Retrieved {result.Items.Count} {result.Entity} record(s) ({result.ProviderName}):");
+            sb.AppendLine(
+                $"Retrieved {result.Items.Count} {result.Entity} record(s) ({result.ProviderName}):");
 
             var i = 1;
             foreach (var row in result.Items)
@@ -58,7 +55,7 @@ public static class GenericCrmReplyFormatter
 
         if (result.AppliedFilterSummary.Count > 0)
         {
-            sb.AppendLine(ar ? "الفلاتر المطبّقة:" : "Applied filters:");
+            sb.AppendLine("Applied filters:");
             foreach (var filter in result.AppliedFilterSummary)
             {
                 sb.AppendLine($"- {filter}");
@@ -67,22 +64,158 @@ public static class GenericCrmReplyFormatter
 
         if (!string.IsNullOrWhiteSpace(result.SortSummary) && result.Operation == CrmQueryOperation.List)
         {
-            sb.AppendLine(ar ? $"الترتيب: {result.SortSummary}" : $"Sort: {result.SortSummary}");
+            sb.AppendLine($"Sort: {result.SortSummary}");
         }
 
         if (crmUserId is Guid id)
         {
-            sb.AppendLine(ar
-                ? $"هوية CRM المستخدمة للقراءة: {id}"
-                : $"CRM read identity (WhoAmI UserId): {id}");
+            sb.AppendLine($"CRM read identity (WhoAmI UserId): {id}");
         }
 
-        sb.AppendLine(ar
-            ? "ملاحظة: تم تجهيز الرد محلياً ولم تُرسل سجلات CRM إلى نموذج الذكاء الاصطناعي."
-            : "Note: This reply was generated locally; CRM records were not sent to the AI model.");
+        sb.AppendLine(
+            "Note: This reply was generated locally; CRM records were not sent to the AI model.");
 
         return sb.ToString().TrimEnd();
     }
+
+    private static string FormatAggregate(GenericCrmQueryResult result)
+    {
+        if (result.Items.Count == 0)
+        {
+            return $"No aggregate results for {result.Entity}.";
+        }
+
+        var segments = new List<string>();
+        decimal? countTotal = null;
+        var allCounts = true;
+        foreach (var row in result.Items)
+        {
+            var label = ResolveAggregateGroupLabel(row);
+            var metric = ResolveAggregateMetric(row, out var numeric, out var isCountLike);
+            if (string.IsNullOrWhiteSpace(metric))
+            {
+                continue;
+            }
+
+            if (isCountLike && numeric is not null)
+            {
+                countTotal = (countTotal ?? 0m) + numeric.Value;
+            }
+            else
+            {
+                allCounts = false;
+            }
+
+            segments.Add(string.IsNullOrWhiteSpace(label) ? metric : $"{metric} {label}");
+        }
+
+        if (segments.Count == 0)
+        {
+            return $"Returned {result.Items.Count} aggregate row(s) for {result.Entity}.";
+        }
+
+        var joined = JoinNatural(segments);
+        if (allCounts && countTotal is decimal total)
+        {
+            var totalText = total.ToString("0.##", CultureInfo.InvariantCulture);
+            return $"Found {totalText} {result.Entity}: {joined}.";
+        }
+
+        return $"{result.Entity} aggregate results: {joined}.";
+    }
+
+    private static string JoinNatural(IReadOnlyList<string> parts)
+    {
+        if (parts.Count == 1)
+        {
+            return parts[0];
+        }
+
+        if (parts.Count == 2)
+        {
+            return $"{parts[0]} and {parts[1]}";
+        }
+
+        var head = string.Join(", ", parts.Take(parts.Count - 1));
+        return $"{head}, and {parts[^1]}";
+    }
+
+    private static string ResolveAggregateGroupLabel(IReadOnlyDictionary<string, object?> row)
+    {
+        if (TryGet(row, "year", out var year) && TryGet(row, "month", out var month) &&
+            !string.IsNullOrWhiteSpace(year) && !string.IsNullOrWhiteSpace(month))
+        {
+            var m = month!.PadLeft(2, '0');
+            return $"{year}-{m}";
+        }
+
+        foreach (var key in new[] { "statuscode_label", "statecode_label", "status_label", "statuscode", "statecode" })
+        {
+            if (TryGet(row, key, out var value) && !string.IsNullOrWhiteSpace(value))
+            {
+                return value!;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string ResolveAggregateMetric(
+        IReadOnlyDictionary<string, object?> row,
+        out decimal? numeric,
+        out bool isCountLike)
+    {
+        numeric = null;
+        isCountLike = false;
+        foreach (var key in new[]
+                 {
+                     "record_count", "ordercount", "count", "total_amount", "totalamount_sum", "sum", "avg", "min", "max"
+                 })
+        {
+            if (!row.TryGetValue(key, out var raw) || raw is null)
+            {
+                continue;
+            }
+
+            isCountLike = key is "record_count" or "ordercount" or "count";
+            numeric = ToDecimalOrNull(raw);
+            if (TryGet(row, key, out var text) && !string.IsNullOrWhiteSpace(text))
+            {
+                return text!;
+            }
+        }
+
+        foreach (var kv in row)
+        {
+            if (kv.Key.EndsWith("_label", StringComparison.OrdinalIgnoreCase) ||
+                kv.Key.Equals("year", StringComparison.OrdinalIgnoreCase) ||
+                kv.Key.Equals("month", StringComparison.OrdinalIgnoreCase) ||
+                kv.Key.Equals("statuscode", StringComparison.OrdinalIgnoreCase) ||
+                kv.Key.Equals("statecode", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (TryGet(row, kv.Key, out var value) && !string.IsNullOrWhiteSpace(value))
+            {
+                numeric = ToDecimalOrNull(kv.Value);
+                return value!;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static decimal? ToDecimalOrNull(object? value) => value switch
+    {
+        decimal d => d,
+        double db => (decimal)db,
+        float f => (decimal)f,
+        int i => i,
+        long l => l,
+        string s when decimal.TryParse(s, NumberStyles.Number, CultureInfo.InvariantCulture, out var p) => p,
+        _ => null
+    };
 
     private static string FormatRow(IReadOnlyDictionary<string, object?> row, GenericCrmQueryResult result)
     {

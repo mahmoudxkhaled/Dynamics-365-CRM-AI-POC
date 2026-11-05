@@ -17,6 +17,16 @@ import { ChatService } from '../../../../core/services/chat.service';
 export class ChatWindowComponent implements OnInit, AfterViewChecked {
   @ViewChild('chatScroll') chatScroll?: ElementRef<HTMLElement>;
 
+  /** Supported suggested questions (read-only CRM scenarios only). */
+  readonly suggestedQuestions: string[] = [
+    'Show the latest 5 Sales Orders.',
+    'How many Sales Orders are there by status?',
+    'Show monthly Sales Order counts for the last 6 months.',
+    'Show total Sales Order amount grouped by status.',
+    'Show the latest 5 Accounts.',
+    'How many Sales Orders were created in the last 30 days?'
+  ];
+
   messages: ChatUiMessage[] = [];
   loading = false;
   conversationId: string | null = null;
@@ -33,11 +43,19 @@ export class ChatWindowComponent implements OnInit, AfterViewChecked {
     });
   }
 
+  get showSuggestions(): boolean {
+    return !this.loading && this.messages.every((m) => m.role === 'meta');
+  }
+
   ngAfterViewChecked(): void {
     if (this.shouldScroll) {
       this.scrollToBottom();
       this.shouldScroll = false;
     }
+  }
+
+  onSuggestion(question: string): void {
+    this.onSend(question);
   }
 
   onSend(message: string): void {

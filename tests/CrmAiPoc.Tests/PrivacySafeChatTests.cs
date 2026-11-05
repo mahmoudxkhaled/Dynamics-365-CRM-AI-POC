@@ -7,7 +7,7 @@ namespace CrmAiPoc.Tests;
 public class PrivacySafeChatTests
 {
     [Fact]
-    public void GenericFormatter_Arabic_SalesOrders()
+    public void GenericFormatter_English_Only_Even_When_LanguageHint_Is_Arabic()
     {
         var text = GenericCrmReplyFormatter.Format(
             new GenericCrmQueryResult
@@ -21,18 +21,18 @@ public class PrivacySafeChatTests
                 [
                     new Dictionary<string, object?>
                     {
-                        ["name"] = "طلب تجريبي",
+                        ["name"] = "Demo order",
                         ["ordernumber"] = "ORD-1",
                         ["createdon"] = DateTimeOffset.Parse("2026-10-01")
                     }
                 ]
             },
-            "ar",
+            "en",
             Guid.Parse("b1335b28-556d-f111-afc3-005056b70b06"));
 
         Assert.Contains("salesorder", text);
         Assert.Contains("ORD-1", text);
-        Assert.Contains("لم تُرسل", text);
+        Assert.Contains("were not sent to the AI model", text);
     }
 
     [Fact]
@@ -82,7 +82,7 @@ public class PrivacySafeChatTests
         var messages = new List<ChatMessage>
         {
             new(ChatRole.System, "system"),
-            new(ChatRole.User, "هاتلي آخر 5 Sales Orders")
+            new(ChatRole.User, "Show me the latest 5 sales orders")
         };
 
         var audit = OutboundAiPayloadAuditor.Audit(messages);

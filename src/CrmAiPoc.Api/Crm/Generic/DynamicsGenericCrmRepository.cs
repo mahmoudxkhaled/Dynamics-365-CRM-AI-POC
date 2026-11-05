@@ -1,8 +1,12 @@
 using System.Globalization;
 using System.Text.Json;
+using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Dynamics;
 using CrmAiPoc.Api.Crm.Metadata;
+using CrmAiPoc.Api.Crm.Query;
+using CrmAiPoc.Api.Diagnostics;
 using CrmAiPoc.Api.Security;
+using Microsoft.Extensions.Options;
 
 namespace CrmAiPoc.Api.Crm.Generic;
 
@@ -12,7 +16,10 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
     private readonly ICrmMetadataService _metadata;
     private readonly EntityApprovalPolicy _policy;
     private readonly IGenericCrmQueryBuilder _builder;
+    private readonly FetchXmlAggregateBuilder _aggregateBuilder;
     private readonly ICrmAuthorizationService _auth;
+    private readonly PipelineDiagnostics _diagnostics;
+    private readonly TimeZoneInfo _businessTz;
     private readonly ILogger<DynamicsGenericCrmRepository> _logger;
 
     public DynamicsGenericCrmRepository(
@@ -20,14 +27,20 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
         ICrmMetadataService metadata,
         EntityApprovalPolicy policy,
         IGenericCrmQueryBuilder builder,
+        FetchXmlAggregateBuilder aggregateBuilder,
         ICrmAuthorizationService auth,
+        PipelineDiagnostics diagnostics,
+        IOptions<CrmOptions> crmOptions,
         ILogger<DynamicsGenericCrmRepository> logger)
     {
         _http = http;
         _metadata = metadata;
         _policy = policy;
         _builder = builder;
+        _aggregateBuilder = aggregateBuilder;
         _auth = auth;
+        _diagnostics = diagnostics;
+        _businessTz = BusinessTimeZone.Resolve(crmOptions.Value.BusinessTimeZoneId);
         _logger = logger;
     }
 
@@ -74,7 +87,28 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
         }
 
         plan = CloneWithEntity(plan, logical);
-        var built = _builder.Build(plan, entity, relatedFrom);
+
+        // All business CRM data queries use FetchXML (list / count / aggregate).
+        if (plan.Operation == CrmQueryOperation.Aggregate)
+        {
+            return await ExecuteAggregateAsync(plan, entity, relatedFrom, cancellationToken);
+        }
+
+        var entityCache = new Dictionary<string, CrmEntityMetadata?>(StringComparer.OrdinalIgnoreCase)
+        {
+            [entity.LogicalName] = entity
+        };
+        if (relatedFrom is not null)
+        {
+            entityCache[relatedFrom.LogicalName] = relatedFrom;
+        }
+
+        await PrefetchLinkEntitiesAsync(plan.Links, entityCache, cancellationToken);
+
+        CrmEntityMetadata? ResolveEntity(string name) =>
+            entityCache.TryGetValue(name, out var cached) ? cached : null;
+
+        var built = _builder.Build(plan, entity, relatedFrom, ResolveEntity);
 
         if (!built.Success || string.IsNullOrWhiteSpace(built.RelativeRequestUri))
         {
@@ -83,64 +117,95 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
 
         _http.EnsureLiveConfigured();
         _logger.LogInformation(
-            "query_crm prepared. Entity={Entity}, Operation={Operation}, Limit={Limit}, Path={Path}",
+            "query_crm FetchXML prepared. Entity={Entity}, Operation={Operation}, Limit={Limit}, FetchLength={FetchLength}",
             logical,
             built.Operation,
             built.Limit,
-            built.RelativeRequestUri);
+            built.FetchXml?.Length ?? 0);
 
-        var includeAnnotations = built.Operation == CrmQueryOperation.Count;
-        var http = await _http.GetAsync(built.RelativeRequestUri, includeAnnotations, cancellationToken);
-        if (!http.IsSuccess && includeAnnotations)
+        LogFetchXmlDiagnostic(plan, logical, built.Operation.ToString().ToLowerInvariant(), built.FetchXml, built.AppliedFilterSummary, built.SortSummary);
+
+        // Prefer formatted-value annotations when supported (On-Prem may reject Prefer — fallback below).
+        var http = await _http.GetAsync(built.RelativeRequestUri, includeAnnotations: true, cancellationToken);
+        if (!http.IsSuccess)
         {
-            // Fall back without Prefer if annotations request fails on this path.
             _logger.LogWarning(
-                "Count query with annotations failed ({Status}); retrying without Prefer.",
+                "FetchXML query with annotations failed ({Status}); retrying without Prefer.",
                 http.StatusCode);
             http = await _http.GetAsync(built.RelativeRequestUri, includeAnnotations: false, cancellationToken);
         }
 
         if (!http.IsSuccess)
         {
-            throw new HttpRequestException(
-                $"Dynamics Web API GET failed. Status={http.StatusCode}, Path={built.RelativeRequestUri}.");
+            var err = DynamicsCrmErrorParser.Parse(http.Body);
+            LogCrmBusinessFailure(built.Operation.ToString(), http.StatusCode, err.Code, err.Message);
+            if (built.Operation == CrmQueryOperation.Count && err.IsAggregateQueryRecordLimit)
+            {
+                var partitioned = await TryPartitionedCountAsync(
+                    plan, entity, relatedFrom, cancellationToken);
+                if (partitioned is not null)
+                {
+                    return partitioned;
+                }
+
+                return Fail(
+                    plan,
+                    "CRM AggregateQueryRecordLimit (0x8004E023) exceeded for count. " +
+                    "Exact total cannot be computed safely over the full dataset; narrow the date range and retry.");
+            }
+
+            _logger.LogWarning(
+                "FetchXML GET failed. Status={Status}, Entity={Entity}, Op={Op}, Code={Code}, Message={Message}",
+                http.StatusCode,
+                logical,
+                built.Operation,
+                err.Code,
+                err.Message);
+            return Fail(
+                plan,
+                $"Dynamics Web API FetchXML GET failed. Status={http.StatusCode}, Code={err.Code}, Entity={logical}.");
         }
 
         if (built.Operation == CrmQueryOperation.Count)
         {
-            var countInfo = ReadODataCountInfo(http.Body);
-            var capped = countInfo.LimitExceeded ||
-                         countInfo.Count >= CrmQueryLimits.DynamicsODataCountCeiling;
+            var countInfo = ReadFetchXmlAggregateCount(http.Body);
+            var capped = countInfo.MayBeCapped ||
+                         countInfo.Count >= CrmQueryLimits.DynamicsFetchXmlAggregateCountCeiling;
+            LogCrmBusinessSuccess("count", rowCount: 0, count: countInfo.Count);
             return new GenericCrmQueryResult
             {
                 Entity = logical,
                 Operation = CrmQueryOperation.Count,
-                RelativeRequestUri = built.RelativeRequestUri,
+                RelativeRequestUri = "(fetchXml count)",
                 AppliedFilterSummary = built.AppliedFilterSummary,
                 SortSummary = built.SortSummary,
                 Limit = built.Limit,
                 Count = countInfo.Count,
                 CountMayBeCapped = capped,
-                CountLimitExceededAnnotation = countInfo.LimitExceeded,
+                CountLimitExceededAnnotation = countInfo.MayBeCapped,
                 Message = capped
-                    ? $"CRM reported count {countInfo.Count} with limit exceeded (v9.1 @odata.count / totalrecordcountlimitexceeded). This is not an exact total."
+                    ? $"CRM FetchXML aggregate count returned {countInfo.Count} and may hit the Dynamics aggregate evaluation ceiling — not guaranteed exact."
                     : null,
                 ProviderName = ProviderName,
                 PrimaryIdAttribute = entity.PrimaryIdAttribute,
                 PrimaryNameAttribute = entity.PrimaryNameAttribute,
                 SelectFields = built.SelectFields,
-                Columns = CrmTableColumnBuilder.Build(entity, built.SelectFields)
+                Columns = LinkResultNormalizer.MergeColumns(
+                    CrmTableColumnBuilder.Build(entity, built.SelectFields),
+                    built.LinkColumns)
             };
         }
 
-        var items = ParseRows(http.Body, entity);
+        var items = LinkResultNormalizer.Normalize(ParseRows(http.Body, entity), built.LinkColumns);
+        items = ClientSideResultSorter.Apply(items, plan.ClientSideSort);
+        LogCrmBusinessSuccess("list", rowCount: items.Count, count: null);
         return new GenericCrmQueryResult
         {
             Entity = logical,
             Operation = CrmQueryOperation.List,
-            RelativeRequestUri = built.RelativeRequestUri,
+            RelativeRequestUri = "(fetchXml list)",
             AppliedFilterSummary = built.AppliedFilterSummary,
-            SortSummary = built.SortSummary,
+            SortSummary = ClientSideResultSorter.AppendSortSummary(built.SortSummary, plan.ClientSideSort),
             Limit = built.Limit,
             Items = items,
             Message = items.Count == 0 ? "No records matched the query." : null,
@@ -148,7 +213,418 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
             PrimaryIdAttribute = entity.PrimaryIdAttribute,
             PrimaryNameAttribute = entity.PrimaryNameAttribute,
             SelectFields = built.SelectFields,
-            Columns = CrmTableColumnBuilder.Build(entity, built.SelectFields, items)
+            Columns = LinkResultNormalizer.MergeColumns(
+                CrmTableColumnBuilder.Build(entity, built.SelectFields, items),
+                built.LinkColumns)
+        };
+    }
+
+    private async Task PrefetchLinkEntitiesAsync(
+        IReadOnlyList<CrmLinkSpec> links,
+        Dictionary<string, CrmEntityMetadata?> cache,
+        CancellationToken cancellationToken)
+    {
+        foreach (var link in links)
+        {
+            var name = link.Entity.Trim();
+            if (!cache.ContainsKey(name))
+            {
+                if (!_policy.IsApproved(name) && !_policy.TryResolveEntityAlias(name, out _))
+                {
+                    cache[name] = null;
+                }
+                else
+                {
+                    var logical = _policy.TryResolveEntityAlias(name, out var resolved) ? resolved : name;
+                    cache[logical] = await _metadata.GetEntityAsync(logical, cancellationToken);
+                    if (!logical.Equals(name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        cache[name] = cache[logical];
+                    }
+                }
+            }
+
+            if (link.Links.Count > 0)
+            {
+                await PrefetchLinkEntitiesAsync(link.Links, cache, cancellationToken);
+            }
+        }
+    }
+
+    private async Task<GenericCrmQueryResult> ExecuteAggregateAsync(
+        CrmQueryPlan plan,
+        CrmEntityMetadata entity,
+        CrmEntityMetadata? relatedFrom,
+        CancellationToken cancellationToken)
+    {
+        var built = _aggregateBuilder.Build(plan, entity, relatedFrom);
+        if (!built.Success || string.IsNullOrWhiteSpace(built.RelativeRequestUri))
+        {
+            return Fail(plan, built.Error ?? "Invalid aggregate CRM query plan.");
+        }
+
+        _http.EnsureLiveConfigured();
+        _logger.LogInformation(
+            "query_crm aggregate prepared. Entity={Entity}, PathLength={PathLength}",
+            entity.LogicalName,
+            built.RelativeRequestUri.Length);
+
+        LogFetchXmlDiagnostic(
+            plan,
+            entity.LogicalName,
+            "aggregate",
+            built.FetchXml,
+            built.AppliedFilterSummary,
+            sortSummary: null);
+
+        var http = await GetAggregateHttpAsync(built.RelativeRequestUri, cancellationToken);
+        if (http.IsSuccess)
+        {
+            var result = ToAggregateResult(plan, entity, built, ParseRows(http.Body, entity));
+            LogCrmBusinessSuccess("aggregate", rowCount: result.Items.Count, count: null);
+            return result;
+        }
+
+        var err = DynamicsCrmErrorParser.Parse(http.Body);
+        LogCrmBusinessFailure("aggregate", http.StatusCode, err.Code, err.Message);
+        _logger.LogWarning(
+            "Aggregate GET failed. Status={Status}, Entity={Entity}, Code={Code}, Message={Message}",
+            http.StatusCode,
+            entity.LogicalName,
+            err.Code,
+            err.Message);
+
+        if (err.IsAggregateQueryRecordLimit)
+        {
+            var partitioned = await TryPartitionedAggregateAsync(plan, entity, relatedFrom, cancellationToken);
+            if (partitioned is not null)
+            {
+                return partitioned;
+            }
+
+            return Fail(
+                plan,
+                "CRM AggregateQueryRecordLimit (0x8004E023) exceeded. " +
+                "Exact grouped totals cannot be computed safely over the full dataset; " +
+                "narrow the date range (for example last_6_calendar_months) and retry.");
+        }
+
+        return Fail(
+            plan,
+            $"Dynamics Web API aggregate GET failed. Status={http.StatusCode}, Code={err.Code}, Entity={entity.LogicalName}.");
+    }
+
+    private async Task<DynamicsHttpResult> GetAggregateHttpAsync(
+        string relativeUri,
+        CancellationToken cancellationToken)
+    {
+        var http = await _http.GetAsync(relativeUri, includeAnnotations: true, cancellationToken);
+        if (!http.IsSuccess)
+        {
+            _logger.LogWarning(
+                "Aggregate query with annotations failed ({Status}); retrying without Prefer.",
+                http.StatusCode);
+            http = await _http.GetAsync(relativeUri, includeAnnotations: false, cancellationToken);
+        }
+
+        return http;
+    }
+
+    private GenericCrmQueryResult ToAggregateResult(
+        CrmQueryPlan plan,
+        CrmEntityMetadata entity,
+        FetchXmlAggregateBuildResult built,
+        IReadOnlyList<IReadOnlyDictionary<string, object?>> rawItems,
+        IReadOnlyList<string>? extraSummaries = null)
+    {
+        var items = AggregateResultNormalizer.Normalize(rawItems, plan, entity, built);
+        var summaries = built.AppliedFilterSummary.ToList();
+        if (extraSummaries is not null)
+        {
+            summaries.AddRange(extraSummaries);
+        }
+
+        return new GenericCrmQueryResult
+        {
+            Entity = entity.LogicalName,
+            Operation = CrmQueryOperation.Aggregate,
+            RelativeRequestUri = "(fetchXml aggregate)",
+            AppliedFilterSummary = summaries,
+            Limit = items.Count,
+            Items = items,
+            Message = items.Count == 0
+                ? "No aggregate rows returned."
+                : string.Join(" ", summaries.Where(s => s.Contains("Money SUM", StringComparison.Ordinal))),
+            ProviderName = ProviderName,
+            PrimaryIdAttribute = entity.PrimaryIdAttribute,
+            PrimaryNameAttribute = entity.PrimaryNameAttribute,
+            SelectFields = built.ResultFieldKeys,
+            Columns = built.Columns
+        };
+    }
+
+    private async Task<GenericCrmQueryResult?> TryPartitionedAggregateAsync(
+        CrmQueryPlan plan,
+        CrmEntityMetadata entity,
+        CrmEntityMetadata? relatedFrom,
+        CancellationToken cancellationToken)
+    {
+        if (!AggregateDatePartitioner.CanMergeExactly(plan))
+        {
+            _logger.LogWarning(
+                "AggregateQueryRecordLimit hit but plan aggregates cannot be partition-merged exactly.");
+            return null;
+        }
+
+        var bounds = await ResolveCreatedOnBoundsAsync(plan, entity, cancellationToken);
+        if (bounds is null)
+        {
+            // No rows in scope — exact empty result.
+            var emptyBuilt = _aggregateBuilder.Build(plan, entity, relatedFrom);
+            return emptyBuilt.Success
+                ? ToAggregateResult(plan, entity, emptyBuilt, Array.Empty<IReadOnlyDictionary<string, object?>>())
+                : null;
+        }
+
+        var years = AggregateDatePartitioner.BuildYearPartitions(bounds.Value.Min, bounds.Value.Max, _businessTz);
+        var partitionRowSets = new List<IReadOnlyList<IReadOnlyDictionary<string, object?>>>();
+        var summaries = new List<string>
+        {
+            $"Recovered AggregateQueryRecordLimit via {years.Count} non-overlapping createdon year partition(s); totals are exact sums of partition results."
+        };
+
+        foreach (var year in years)
+        {
+            var yearRows = await ExecuteAggregatePartitionAsync(
+                plan, entity, relatedFrom, year, cancellationToken);
+            if (yearRows is not null)
+            {
+                partitionRowSets.Add(yearRows);
+                continue;
+            }
+
+            // Year still over limit — subdivide into months (still non-overlapping).
+            var months = AggregateDatePartitioner.BuildMonthPartitions(year, _businessTz);
+            if (months.Count == 0)
+            {
+                return null;
+            }
+
+            summaries.Add($"Year partition {year.Label} subdivided into {months.Count} month partition(s).");
+            foreach (var month in months)
+            {
+                var monthRows = await ExecuteAggregatePartitionAsync(
+                    plan, entity, relatedFrom, month, cancellationToken);
+                if (monthRows is null)
+                {
+                    _logger.LogWarning(
+                        "Aggregate partition {Label} still exceeds AggregateQueryRecordLimit; cannot compute exact totals.",
+                        month.Label);
+                    return null;
+                }
+
+                partitionRowSets.Add(monthRows);
+            }
+        }
+
+        var merged = AggregateDatePartitioner.MergePartitionRows(partitionRowSets, plan);
+        var built = _aggregateBuilder.Build(plan, entity, relatedFrom);
+        if (!built.Success)
+        {
+            return null;
+        }
+
+        return ToAggregateResult(plan, entity, built, merged, summaries);
+    }
+
+    private async Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>?> ExecuteAggregatePartitionAsync(
+        CrmQueryPlan plan,
+        CrmEntityMetadata entity,
+        CrmEntityMetadata? relatedFrom,
+        AggregateDatePartitioner.Partition partition,
+        CancellationToken cancellationToken)
+    {
+        var built = _aggregateBuilder.Build(plan, entity, relatedFrom, partition);
+        if (!built.Success || string.IsNullOrWhiteSpace(built.RelativeRequestUri))
+        {
+            return null;
+        }
+
+        var http = await GetAggregateHttpAsync(built.RelativeRequestUri, cancellationToken);
+        if (!http.IsSuccess)
+        {
+            var err = DynamicsCrmErrorParser.Parse(http.Body);
+            if (err.IsAggregateQueryRecordLimit)
+            {
+                return null;
+            }
+
+            _logger.LogWarning(
+                "Partition aggregate failed non-limit error. Label={Label}, Status={Status}, Code={Code}",
+                partition.Label,
+                http.StatusCode,
+                err.Code);
+            return null;
+        }
+
+        return ParseRows(http.Body, entity);
+    }
+
+    private async Task<GenericCrmQueryResult?> TryPartitionedCountAsync(
+        CrmQueryPlan plan,
+        CrmEntityMetadata entity,
+        CrmEntityMetadata? relatedFrom,
+        CancellationToken cancellationToken)
+    {
+        // Reuse aggregate COUNT partition merge (exact).
+        var aggPlan = new CrmQueryPlan
+        {
+            Entity = plan.Entity,
+            Operation = CrmQueryOperation.Aggregate,
+            Filters = plan.Filters,
+            RelativeDate = plan.RelativeDate,
+            RelatedFromEntity = plan.RelatedFromEntity,
+            RelatedFromId = plan.RelatedFromId,
+            Aggregates =
+            [
+                new CrmAggregateSpec
+                {
+                    Function = CrmAggregateFunction.Count,
+                    Field = entity.PrimaryIdAttribute,
+                    Alias = GenericCrmQueryBuilder.CountAlias
+                }
+            ]
+        };
+
+        var partitioned = await TryPartitionedAggregateAsync(aggPlan, entity, relatedFrom, cancellationToken);
+        if (partitioned is null || partitioned.Items.Count == 0)
+        {
+            return partitioned is null
+                ? null
+                : new GenericCrmQueryResult
+                {
+                    Entity = entity.LogicalName,
+                    Operation = CrmQueryOperation.Count,
+                    RelativeRequestUri = "(fetchXml count partitioned)",
+                    AppliedFilterSummary = partitioned.AppliedFilterSummary,
+                    Count = 0,
+                    CountMayBeCapped = false,
+                    ProviderName = ProviderName,
+                    PrimaryIdAttribute = entity.PrimaryIdAttribute,
+                    PrimaryNameAttribute = entity.PrimaryNameAttribute
+                };
+        }
+
+        var total = 0L;
+        foreach (var row in partitioned.Items)
+        {
+            if (row.TryGetValue(GenericCrmQueryBuilder.CountAlias, out var raw))
+            {
+                total += raw switch
+                {
+                    int i => i,
+                    long l => l,
+                    decimal d => (long)d,
+                    string s when long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var p) => p,
+                    _ => 0
+                };
+            }
+        }
+
+        return new GenericCrmQueryResult
+        {
+            Entity = entity.LogicalName,
+            Operation = CrmQueryOperation.Count,
+            RelativeRequestUri = "(fetchXml count partitioned)",
+            AppliedFilterSummary = partitioned.AppliedFilterSummary,
+            Count = total > int.MaxValue ? int.MaxValue : (int)total,
+            CountMayBeCapped = false,
+            Message = null,
+            ProviderName = ProviderName,
+            PrimaryIdAttribute = entity.PrimaryIdAttribute,
+            PrimaryNameAttribute = entity.PrimaryNameAttribute,
+            SelectFields = Array.Empty<string>(),
+            Columns = Array.Empty<CrmTableColumn>()
+        };
+    }
+
+    /// <summary>
+    /// Resolves half-open createdon coverage for partition planning using list queries (not aggregates).
+    /// </summary>
+    private async Task<(DateTimeOffset Min, DateTimeOffset Max)?> ResolveCreatedOnBoundsAsync(
+        CrmQueryPlan plan,
+        CrmEntityMetadata entity,
+        CancellationToken cancellationToken)
+    {
+        if (plan.RelativeDate is not null)
+        {
+            var resolved = DateRangeResolver.Resolve(
+                plan.RelativeDate.GetExpression(),
+                DateTimeOffset.UtcNow,
+                _businessTz);
+            return (resolved.StartUtc, resolved.EndUtcExclusive.AddTicks(-1));
+        }
+
+        var min = await FetchCreatedOnBoundAsync(entity, plan, ascending: true, cancellationToken);
+        var max = await FetchCreatedOnBoundAsync(entity, plan, ascending: false, cancellationToken);
+        if (min is null || max is null)
+        {
+            return null;
+        }
+
+        return (min.Value, max.Value);
+    }
+
+    private async Task<DateTimeOffset?> FetchCreatedOnBoundAsync(
+        CrmEntityMetadata entity,
+        CrmQueryPlan sourcePlan,
+        bool ascending,
+        CancellationToken cancellationToken)
+    {
+        var listPlan = new CrmQueryPlan
+        {
+            Entity = sourcePlan.Entity,
+            Operation = CrmQueryOperation.List,
+            Filters = sourcePlan.Filters,
+            RelativeDate = sourcePlan.RelativeDate,
+            RelatedFromEntity = sourcePlan.RelatedFromEntity,
+            RelatedFromId = sourcePlan.RelatedFromId,
+            Select = ["createdon"],
+            Limit = 1,
+            Sort =
+            [
+                new CrmQuerySort
+                {
+                    Field = "createdon",
+                    Direction = ascending ? CrmSortDirection.Asc : CrmSortDirection.Desc
+                }
+            ]
+        };
+
+        var built = _builder.Build(listPlan, entity);
+        if (!built.Success || string.IsNullOrWhiteSpace(built.RelativeRequestUri))
+        {
+            return null;
+        }
+
+        var http = await _http.GetAsync(built.RelativeRequestUri, includeAnnotations: false, cancellationToken);
+        if (!http.IsSuccess)
+        {
+            return null;
+        }
+
+        var rows = ParseRows(http.Body, entity);
+        if (rows.Count == 0 || !rows[0].TryGetValue("createdon", out var raw) || raw is null)
+        {
+            return null;
+        }
+
+        return raw switch
+        {
+            DateTimeOffset dto => dto,
+            DateTime dt => new DateTimeOffset(DateTime.SpecifyKind(dt, DateTimeKind.Utc)),
+            string s when DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var p) => p,
+            _ => null
         };
     }
 
@@ -161,9 +637,13 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
             Filters = plan.Filters,
             RelativeDate = plan.RelativeDate,
             Sort = plan.Sort,
+            ClientSideSort = plan.ClientSideSort,
             Limit = plan.Limit,
             RelatedFromEntity = plan.RelatedFromEntity,
-            RelatedFromId = plan.RelatedFromId
+            RelatedFromId = plan.RelatedFromId,
+            Aggregates = plan.Aggregates,
+            GroupBy = plan.GroupBy,
+            Links = plan.Links
         };
 
     private static GenericCrmQueryResult Fail(CrmQueryPlan plan, string message) =>
@@ -176,30 +656,118 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
             ProviderName = "Dynamics365"
         };
 
-    private static (int Count, bool LimitExceeded) ReadODataCountInfo(string json)
+    /// <summary>
+    /// Reads aggregate FetchXML count alias (<see cref="GenericCrmQueryBuilder.CountAlias"/>).
+    /// Does not treat page size as a total count.
+    /// </summary>
+    private static (int Count, bool MayBeCapped) ReadFetchXmlAggregateCount(string json)
     {
         using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-        var count = 0;
-        if (root.TryGetProperty("@odata.count", out var countProp) && countProp.TryGetInt32(out var c))
+        if (!doc.RootElement.TryGetProperty("value", out var values) ||
+            values.ValueKind != JsonValueKind.Array)
         {
-            count = c;
-        }
-        else if (root.TryGetProperty("@Microsoft.Dynamics.CRM.totalrecordcount", out var totalProp) &&
-                 totalProp.TryGetInt32(out var total))
-        {
-            count = total;
+            return (0, false);
         }
 
-        var exceeded = false;
-        if (root.TryGetProperty("@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded", out var exceededProp))
+        var first = values.EnumerateArray().FirstOrDefault();
+        if (first.ValueKind != JsonValueKind.Object)
         {
-            exceeded = exceededProp.ValueKind == JsonValueKind.True ||
-                       (exceededProp.ValueKind == JsonValueKind.String &&
-                        bool.TryParse(exceededProp.GetString(), out var b) && b);
+            return (0, false);
         }
 
-        return (count, exceeded);
+        foreach (var name in new[] { GenericCrmQueryBuilder.CountAlias, "count", "recordcount" })
+        {
+            if (first.TryGetProperty(name, out var prop) && TryReadInt(prop, out var n))
+            {
+                return (n, n >= CrmQueryLimits.DynamicsFetchXmlAggregateCountCeiling);
+            }
+        }
+
+        // Some orgs return the alias with a type suffix or as the only numeric property.
+        foreach (var prop in first.EnumerateObject())
+        {
+            if (prop.Name.StartsWith("@", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (TryReadInt(prop.Value, out var n))
+            {
+                return (n, n >= CrmQueryLimits.DynamicsFetchXmlAggregateCountCeiling);
+            }
+        }
+
+        return (0, false);
+    }
+
+    private static bool TryReadInt(JsonElement prop, out int value)
+    {
+        value = 0;
+        if (prop.ValueKind == JsonValueKind.Number && prop.TryGetInt32(out value))
+        {
+            return true;
+        }
+
+        if (prop.ValueKind == JsonValueKind.String &&
+            int.TryParse(prop.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private void LogFetchXmlDiagnostic(
+        CrmQueryPlan plan,
+        string entityLogicalName,
+        string operation,
+        string? fetchXml,
+        IReadOnlyList<string> appliedFilters,
+        string? sortSummary)
+    {
+        _diagnostics.LogFetchXml(sb =>
+        {
+            sb.AppendLine($"Operation: {operation}");
+            sb.AppendLine($"RootEntity: {entityLogicalName}");
+            sb.AppendLine($"Select: [{string.Join(", ", plan.Select)}]");
+            sb.AppendLine($"FiltersSummary: [{string.Join(" | ", appliedFilters)}]");
+            sb.AppendLine($"Sort: {sortSummary ?? "(none)"}");
+            sb.AppendLine($"Aggregates: {_diagnostics.PrettyJsonSerialize(plan.Aggregates)}");
+            sb.AppendLine($"GroupBy: {_diagnostics.PrettyJsonSerialize(plan.GroupBy)}");
+            sb.AppendLine($"Links: {_diagnostics.PrettyJsonSerialize(plan.Links)}");
+            sb.AppendLine("FetchXml (final validated document; values may be redacted in log only):");
+            sb.AppendLine(_diagnostics.FormatFetchXmlForLog(fetchXml));
+        });
+    }
+
+    private void LogCrmBusinessSuccess(string operation, int rowCount, long? count)
+    {
+        _diagnostics.LogCrmHttpResponse(sb =>
+        {
+            sb.AppendLine("Category: Business FetchXML query (execution summary)");
+            sb.AppendLine($"Operation: {operation}");
+            sb.AppendLine("Success: true");
+            sb.AppendLine($"ResultRowCount: {rowCount}");
+            if (count is not null)
+            {
+                sb.AppendLine($"Count: {count}");
+            }
+
+            sb.AppendLine("Note: CRM record payloads are never logged.");
+        });
+    }
+
+    private void LogCrmBusinessFailure(string operation, int status, string? code, string? message)
+    {
+        _diagnostics.LogCrmHttpResponse(sb =>
+        {
+            sb.AppendLine("Category: Business FetchXML query (execution failure)");
+            sb.AppendLine($"Operation: {operation}");
+            sb.AppendLine($"Status: {status}");
+            sb.AppendLine("Success: false");
+            sb.AppendLine($"DynamicsErrorCode: {code ?? "(none)"}");
+            sb.AppendLine($"DynamicsErrorMessage: {_diagnostics.RedactText(message)}");
+        });
     }
 
     private static List<IReadOnlyDictionary<string, object?>> ParseRows(string json, CrmEntityMetadata entity)

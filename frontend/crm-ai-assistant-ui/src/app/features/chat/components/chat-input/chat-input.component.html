@@ -5,8 +5,7 @@
       name="message"
       [(ngModel)]="message"
       [disabled]="disabled"
-      [class.rtl]="inputRtl"
-      [attr.dir]="inputRtl ? 'rtl' : 'ltr'"
+      dir="ltr"
       placeholder="Ask about sales orders, accounts, contacts, leads..."
       autocomplete="off"
       required
@@ -16,20 +15,6 @@
     </button>
   </form>
   <div class="hints">
-    Try:
-    @for (sample of samples; track sample; let last = $last) {
-      <button
-        type="button"
-        class="hint-sample"
-        [class.copied]="copiedSample === sample"
-        [title]="copiedSample === sample ? 'Copied!' : 'Click to copy'"
-        (click)="useSample(sample, $event)"
-      >
-        {{ sample }}
-      </button>
-      @if (!last) {
-        <span aria-hidden="true"> · </span>
-      }
-    }
+    Supported: list, count, and grouped reports (status / monthly / totals). Read-only CRM queries only.
   </div>
 </div>

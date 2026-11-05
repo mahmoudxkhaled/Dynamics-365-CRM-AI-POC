@@ -36,7 +36,9 @@ public static class StaticSeedCrmMetadata
                 Attr("address1_city", CrmAttributeKind.String, filterable: true),
                 Attr("address1_country", CrmAttributeKind.String, filterable: true),
                 Attr("createdon", CrmAttributeKind.DateTime, filterable: true, sortable: true),
-                Attr("modifiedon", CrmAttributeKind.DateTime, filterable: true, sortable: false)
+                Attr("modifiedon", CrmAttributeKind.DateTime, filterable: true, sortable: false),
+                Attr("primarycontactid", CrmAttributeKind.Lookup, filterable: true,
+                    odata: "_primarycontactid_value", aliases: ["primary contact"])
             ],
             Relationships =
             [
@@ -49,7 +51,23 @@ public static class StaticSeedCrmMetadata
                     ReferencingAttribute = "parentcustomerid",
                     ReferencedAttribute = "accountid",
                     ReferencedEntityNavigationPropertyName = "contact_customer_accounts",
-                    IsApproved = true
+                    BusinessLabel = "Account Contacts",
+                    IsApproved = true,
+                    Provenance = CrmMetadataProvenance.Seed
+                },
+                new CrmRelationshipMetadata
+                {
+                    SchemaName = "account_primary_contact",
+                    Kind = CrmRelationshipKind.ManyToOne,
+                    ReferencingEntity = "account",
+                    ReferencedEntity = "contact",
+                    ReferencingAttribute = "primarycontactid",
+                    ReferencedAttribute = "contactid",
+                    ReferencingEntityNavigationPropertyName = "primarycontactid",
+                    ReferencingAttributeDisplayName = "Primary Contact",
+                    BusinessLabel = "Primary Contact",
+                    IsApproved = true,
+                    Provenance = CrmMetadataProvenance.Seed
                 }
             ]
         };
@@ -132,13 +150,30 @@ public static class StaticSeedCrmMetadata
             [
                 new CrmRelationshipMetadata
                 {
+                    SchemaName = "te_account_salesorder_customeraccountid",
+                    Kind = CrmRelationshipKind.ManyToOne,
+                    ReferencingEntity = "salesorder",
+                    ReferencedEntity = "account",
+                    ReferencingAttribute = "te_customeraccountid",
+                    ReferencedAttribute = "accountid",
+                    ReferencingEntityNavigationPropertyName = "te_customeraccountid",
+                    ReferencingAttributeDisplayName = "Customer Account",
+                    BusinessLabel = "Customer Account",
+                    IsApproved = true,
+                    Provenance = CrmMetadataProvenance.Seed
+                },
+                new CrmRelationshipMetadata
+                {
                     SchemaName = "order_customer_accounts",
                     Kind = CrmRelationshipKind.ManyToOne,
                     ReferencingEntity = "salesorder",
                     ReferencedEntity = "account",
                     ReferencingAttribute = "customerid",
                     ReferencedAttribute = "accountid",
-                    IsApproved = true
+                    ReferencingAttributeDisplayName = "Potential Customer",
+                    BusinessLabel = "Potential Customer (Account)",
+                    IsApproved = true,
+                    Provenance = CrmMetadataProvenance.Seed
                 }
             ]
         };

@@ -11,7 +11,7 @@ Content-Type: application/json
   "message": "Show me accounts containing Ahmed"
 }
 
-### Count accounts (Arabic)
+### Arabic-script question (must reject locally)
 POST {{CrmAiPoc.Api_HostAddress}}/api/chat
 Content-Type: application/json
 

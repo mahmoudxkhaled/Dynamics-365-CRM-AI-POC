@@ -143,6 +143,7 @@ public sealed class LiveMonthlySalesOrder2025VerificationTests
         services.AddSingleton<ICrmAuthorizationService, CrmAuthorizationService>();
         services.AddSingleton<IGenericCrmRepository, DynamicsGenericCrmRepository>();
         services.AddSingleton<ICrmAiMetadataCatalogService, CrmAiMetadataCatalogService>();
+        LiveSemanticDiRegistration.AddSemanticMetadataRetrieval(services);
         services.AddSingleton<LazyGroqChatClient>();
         services.AddSingleton<IChatClient>(sp => sp.GetRequiredService<LazyGroqChatClient>());
         services.AddScoped<CrmAiTools>();

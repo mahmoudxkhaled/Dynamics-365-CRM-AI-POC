@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using System.Globalization;
 using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Dynamics;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
+using CrmAiPoc.Api.Crm.Metadata.Semantic;
 using CrmAiPoc.Api.Models;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
@@ -63,6 +65,7 @@ public sealed partial class ChatService
     private readonly DynamicsConnectivityService _connectivity;
     private readonly IGenericCrmRepository _genericCrm;
     private readonly ICrmAiMetadataCatalogService _metadataCatalog;
+    private readonly ISemanticCrmMetadataRetriever _semanticRetriever;
     private readonly ICrmMetadataService _metadata;
     private readonly EntityApprovalPolicy _approvalPolicy;
     private readonly CrmRelationshipLabeler _relationshipLabeler;
@@ -77,6 +80,7 @@ public sealed partial class ChatService
         DynamicsConnectivityService connectivity,
         IGenericCrmRepository genericCrm,
         ICrmAiMetadataCatalogService metadataCatalog,
+        ISemanticCrmMetadataRetriever semanticRetriever,
         ICrmMetadataService metadata,
         EntityApprovalPolicy approvalPolicy,
         CrmRelationshipLabeler relationshipLabeler,
@@ -90,6 +94,7 @@ public sealed partial class ChatService
         _connectivity = connectivity;
         _genericCrm = genericCrm;
         _metadataCatalog = metadataCatalog;
+        _semanticRetriever = semanticRetriever;
         _metadata = metadata;
         _approvalPolicy = approvalPolicy;
         _relationshipLabeler = relationshipLabeler;
@@ -162,17 +167,54 @@ public sealed partial class ChatService
         var userMessage = request.Message.Trim();
         var correlationId = Guid.NewGuid().ToString("N")[..12];
 
-        // Single-stage: full approved metadata catalog + user question + query_crm → one Groq call.
-        var catalog = await _metadataCatalog.BuildApprovedCatalogAsync(userMessage, cancellationToken);
+        // Single-stage: semantic metadata selection → compact catalog + user question + query_crm → one Groq call.
+        // Backend validation continues to use the full authorized CRM metadata cache.
+        var retrievalSw = Stopwatch.StartNew();
+        var retrieval = await _semanticRetriever.RetrieveAsync(userMessage, cancellationToken);
+        retrievalSw.Stop();
+        LogSemanticRetrieval(correlationId, userMessage, retrieval, retrievalSw.ElapsedMilliseconds);
+
+        if (!string.IsNullOrWhiteSpace(retrieval.Error) || retrieval.EntityHits.Count == 0)
+        {
+            var detail = !string.IsNullOrWhiteSpace(retrieval.Error)
+                ? retrieval.Error
+                : "No relevant approved CRM metadata was retrieved.";
+            _logger.LogWarning(
+                "Refusing AI planning because semantic metadata retrieval failed: {Error}",
+                detail);
+            return CreateResponse(
+                session,
+                "I cannot plan this CRM question because semantic metadata retrieval failed. " +
+                "Ensure the local Ollama embedding service is available, then retry. " +
+                $"Details: {detail}",
+                outboundWasSafe: true);
+        }
+
+        var catalog = await _metadataCatalog.BuildCatalogFromSemanticRetrievalAsync(
+            retrieval,
+            cancellationToken);
+        LogAiMetadataCatalog(correlationId, catalog);
+
         if (_crmOptions.AllowSendApprovedMetadataCatalogToAi && !catalog.Success)
         {
             _logger.LogWarning(
-                "Refusing AI planning because metadata catalog construction failed: {Error}",
+                "Refusing AI planning because semantic metadata catalog construction failed: {Error}",
                 catalog.Error);
             return CreateResponse(
                 session,
-                "I cannot plan this CRM question safely because the approved metadata catalog could not be prepared. " +
+                "I cannot plan this CRM question safely because the semantic metadata catalog could not be prepared. " +
                 "Please retry shortly or contact support if this persists.",
+                outboundWasSafe: true);
+        }
+
+        if (_crmOptions.AllowSendApprovedMetadataCatalogToAi &&
+            (string.IsNullOrWhiteSpace(catalog.FormattedBlock) || catalog.IncludedEntityCount == 0))
+        {
+            _logger.LogWarning(
+                "Refusing AI planning because the semantic metadata catalog is empty.");
+            return CreateResponse(
+                session,
+                "I cannot plan this CRM question because no approved CRM metadata was selected for the AI planner.",
                 outboundWasSafe: true);
         }
 
@@ -488,19 +530,74 @@ public sealed partial class ChatService
         return messages;
     }
 
+    private void LogSemanticRetrieval(
+        string correlationId,
+        string userMessage,
+        SemanticMetadataRetrievalResult retrieval,
+        long durationMs)
+    {
+        var entities = string.Join(
+            ", ",
+            retrieval.EntityHits.Select(h =>
+                $"{h.Document.EntityLogicalName}:{h.Similarity:F3}"));
+        var attributes = string.Join(
+            ", ",
+            retrieval.AttributeHits.Select(h =>
+                $"{h.Document.EntityLogicalName}.{h.Document.AttributeLogicalName}:{h.Similarity:F3}"));
+        var relationships = string.Join(
+            ", ",
+            retrieval.RelationshipHits.Select(h =>
+                $"{h.Document.RelationshipSchemaName}:{h.Similarity:F3}"));
+
+        _logger.LogInformation(
+            "[SEMANTIC RETRIEVAL] CorrelationId={CorrelationId} Question={Question} IndexRebuilt={IndexRebuilt} " +
+            "SelectedEntities=[{SelectedEntities}] SelectedAttributes=[{SelectedAttributes}] " +
+            "SelectedRelationships=[{SelectedRelationships}] RetrievalDurationMs={RetrievalDurationMs} " +
+            "RetrievedMetadataCount={RetrievedMetadataCount} IndexedDocumentCount={IndexedDocumentCount} Error={Error}",
+            correlationId,
+            TruncateForLog(userMessage, 500),
+            retrieval.IndexRebuilt,
+            entities,
+            TruncateForLog(attributes, 2000),
+            TruncateForLog(relationships, 1000),
+            durationMs,
+            retrieval.RetrievedDocumentCount,
+            retrieval.IndexedDocumentCount,
+            retrieval.Error ?? "(none)");
+    }
+
+    private void LogAiMetadataCatalog(string correlationId, CrmAiMetadataCatalogBuildResult catalog)
+    {
+        _logger.LogInformation(
+            "[AI METADATA CATALOG] CorrelationId={CorrelationId} EntityCount={EntityCount} " +
+            "AttributeCount={AttributeCount} RelationshipCount={RelationshipCount} " +
+            "CatalogCharacters={CatalogCharacters} Source={Source} Success={Success} Error={Error}",
+            correlationId,
+            catalog.IncludedEntityCount,
+            catalog.IncludedAttributeCount,
+            catalog.IncludedRelationshipCount,
+            catalog.CharacterCount,
+            catalog.Source,
+            catalog.Success,
+            catalog.Error ?? "(none)");
+    }
+
     private void LogAiRequest(
         string correlationId,
         string userMessage,
         CrmAiMetadataCatalogBuildResult catalog,
         IReadOnlyList<ChatMessage> outboundHistory)
     {
+        var requestPayloadChars = outboundHistory.Sum(m => m.Text?.Length ?? 0);
         _logger.LogInformation(
-            "[AI REQUEST] CorrelationId={CorrelationId} OriginalQuestion={OriginalQuestion} " +
-            "MetadataEntityCount={MetadataEntityCount} MetadataAttributeCount={MetadataAttributeCount} " +
-            "MetadataRelationshipCount={MetadataRelationshipCount} MetadataPayloadChars={MetadataPayloadChars} " +
-            "OutboundMessageCount={OutboundMessageCount} HasCatalog={HasCatalog} HasQueryCrmTool=true",
+            "[GROQ REQUEST] CorrelationId={CorrelationId} OriginalQuestion={OriginalQuestion} " +
+            "RequestPayloadCharacters={RequestPayloadCharacters} MetadataEntityCount={MetadataEntityCount} " +
+            "MetadataAttributeCount={MetadataAttributeCount} MetadataRelationshipCount={MetadataRelationshipCount} " +
+            "MetadataPayloadChars={MetadataPayloadChars} OutboundMessageCount={OutboundMessageCount} " +
+            "HasCatalog={HasCatalog} HasQueryCrmTool=true",
             correlationId,
             TruncateForLog(userMessage, 500),
+            requestPayloadChars,
             catalog.IncludedEntityCount,
             catalog.IncludedAttributeCount,
             catalog.IncludedRelationshipCount,
@@ -513,7 +610,7 @@ public sealed partial class ChatService
             var path = Path.Combine(Path.GetTempPath(), "crm-poc-ai-request-metadata-catalog.txt");
             File.WriteAllText(path, catalog.FormattedBlock);
             _logger.LogInformation(
-                "[AI REQUEST] CorrelationId={CorrelationId} MetadataDumpPath={Path}",
+                "[GROQ REQUEST] CorrelationId={CorrelationId} MetadataDumpPath={Path}",
                 correlationId,
                 path);
         }
@@ -528,25 +625,38 @@ public sealed partial class ChatService
         var inputTokens = usage?.InputTokenCount;
         var outputTokens = usage?.OutputTokenCount;
         var totalTokens = usage?.TotalTokenCount;
+        long? cachedTokens = null;
+        if (usage?.AdditionalCounts is not null)
+        {
+            foreach (var kv in usage.AdditionalCounts)
+            {
+                if (kv.Key.Contains("cache", StringComparison.OrdinalIgnoreCase))
+                {
+                    cachedTokens = kv.Value;
+                    break;
+                }
+            }
+        }
 
         if (functionCalls.Count == 0)
         {
             _logger.LogInformation(
-                "[AI RESPONSE] CorrelationId={CorrelationId} ToolCall=(none) Text={Text} " +
-                "InputTokenCount={InputTokenCount} OutputTokenCount={OutputTokenCount} TotalTokenCount={TotalTokenCount}",
+                "[GROQ RESPONSE] CorrelationId={CorrelationId} ProviderStatus=ok ToolCall=(none) Text={Text} " +
+                "PromptTokens={PromptTokens} CompletionTokens={CompletionTokens} TotalTokens={TotalTokens} CachedTokens={CachedTokens}",
                 correlationId,
                 TruncateForLog(modelResponse.Text, 800),
                 inputTokens,
                 outputTokens,
-                totalTokens);
+                totalTokens,
+                cachedTokens);
             return;
         }
 
         var call = functionCalls[0];
         _logger.LogInformation(
-            "[AI RESPONSE] CorrelationId={CorrelationId} ToolName={ToolName} Entity={Entity} Operation={Operation} " +
-            "RawToolArguments={RawToolArguments} InputTokenCount={InputTokenCount} OutputTokenCount={OutputTokenCount} " +
-            "TotalTokenCount={TotalTokenCount}",
+            "[GROQ RESPONSE] CorrelationId={CorrelationId} ProviderStatus=ok ToolName={ToolName} Entity={Entity} Operation={Operation} " +
+            "RawToolArguments={RawToolArguments} PromptTokens={PromptTokens} CompletionTokens={CompletionTokens} " +
+            "TotalTokens={TotalTokens} CachedTokens={CachedTokens}",
             correlationId,
             call.Name,
             GetArgValue(call.Arguments, "entity"),
@@ -554,7 +664,8 @@ public sealed partial class ChatService
             FormatToolArguments(call.Arguments),
             inputTokens,
             outputTokens,
-            totalTokens);
+            totalTokens,
+            cachedTokens);
     }
 
     private static bool IsDevelopmentEnvironment() =>

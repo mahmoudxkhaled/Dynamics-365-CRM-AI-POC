@@ -3,6 +3,7 @@ using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Dynamics;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
+using CrmAiPoc.Api.Crm.Metadata.Semantic;
 using CrmAiPoc.Api.Crm.Validation;
 using CrmAiPoc.Api.Endpoints;
 using CrmAiPoc.Api.Security;
@@ -80,6 +81,20 @@ builder.Services.Configure<CrmOptions>(options =>
         Environment.GetEnvironmentVariable("CRM_DOMAIN"));
 });
 
+builder.Services.Configure<OllamaOptions>(options =>
+{
+    builder.Configuration.GetSection(OllamaOptions.SectionName).Bind(options);
+    options.BaseUrl = FirstNonEmpty(
+        options.BaseUrl,
+        Environment.GetEnvironmentVariable("OLLAMA_BASE_URL")) ?? options.BaseUrl;
+    options.EmbeddingModel = FirstNonEmpty(
+        options.EmbeddingModel,
+        Environment.GetEnvironmentVariable("OLLAMA_EMBEDDING_MODEL")) ?? options.EmbeddingModel;
+});
+
+builder.Services.Configure<SemanticMetadataOptions>(
+    builder.Configuration.GetSection(SemanticMetadataOptions.SectionName));
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -102,6 +117,20 @@ builder.Services.AddSingleton<IGenericCrmQueryBuilder, GenericCrmQueryBuilder>()
 builder.Services.AddSingleton<FetchXmlAggregateBuilder>();
 builder.Services.AddScoped<CrmAiTools>();
 builder.Services.AddScoped<ChatService>();
+
+// Semantic metadata retrieval (Ollama embeddings) — selects compact AI catalog for ChatService.
+builder.Services.AddHttpClient(OllamaEmbeddingClient.HttpClientName, (sp, client) =>
+{
+    var opts = sp.GetRequiredService<IOptions<OllamaOptions>>().Value;
+    var baseUrl = string.IsNullOrWhiteSpace(opts.BaseUrl)
+        ? "http://localhost:11434/"
+        : (opts.BaseUrl.EndsWith('/') ? opts.BaseUrl : opts.BaseUrl + "/");
+    client.BaseAddress = new Uri(baseUrl);
+    client.Timeout = TimeSpan.FromSeconds(Math.Clamp(opts.TimeoutSeconds, 5, 300));
+});
+builder.Services.AddSingleton<IOllamaEmbeddingClient, OllamaEmbeddingClient>();
+builder.Services.AddSingleton<InMemorySemanticMetadataIndex>();
+builder.Services.AddSingleton<ISemanticCrmMetadataRetriever, SemanticCrmMetadataRetriever>();
 
 // Dynamics HTTP is always registered so connectivity can be tested
 // without permanently switching Crm:Provider (calls still require EnableLiveIntegration + BaseUrl).
@@ -211,6 +240,10 @@ app.UseCors();
 app.UseMiddleware<LoopbackOnlyMiddleware>();
 
 app.MapChatEndpoints();
+if (app.Environment.IsDevelopment())
+{
+    app.MapSemanticMetadataEndpoints();
+}
 
 app.Run();
 

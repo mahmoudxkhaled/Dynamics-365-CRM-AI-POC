@@ -2,13 +2,15 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using CrmAiPoc.Api.Configuration;
+using CrmAiPoc.Api.Crm.Metadata.Semantic;
 using Microsoft.Extensions.Options;
 
 namespace CrmAiPoc.Api.Crm.Metadata;
 
 /// <summary>
-/// Builds the full approved metadata catalog for a single AI planning request.
-/// Readable attributes for all ApprovedEntities; relationships filtered to IsApproved only.
+/// Builds approved metadata catalogs for AI planning.
+/// Full catalog for diagnostics; semantic-selected catalog for ChatService.
+/// Relationships filtered to IsApproved only. Never includes CRM business records.
 /// </summary>
 public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
 {
@@ -48,10 +50,171 @@ public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
     {
         _ = userMessage;
         _ = cancellationToken;
-        return Task.FromResult(BuildCatalogCore(ResolveApprovedEntitiesForCatalog()));
+        return Task.FromResult(BuildCatalogCore(
+            ResolveApprovedEntitiesForCatalog(),
+            mode: "poc-full-approved-metadata",
+            source: null));
     }
 
-    private CrmAiMetadataCatalogBuildResult BuildCatalogCore(IReadOnlyList<CrmEntityMetadata> entities)
+    public Task<CrmAiMetadataCatalogBuildResult> BuildCatalogFromSemanticRetrievalAsync(
+        SemanticMetadataRetrievalResult retrieval,
+        CancellationToken cancellationToken = default)
+    {
+        _ = cancellationToken;
+        if (!_options.AllowSendApprovedMetadataCatalogToAi)
+        {
+            return Task.FromResult(new CrmAiMetadataCatalogBuildResult
+            {
+                Enabled = false,
+                Success = true,
+                FormattedBlock = string.Empty,
+                Source = "Disabled"
+            });
+        }
+
+        if (retrieval is null)
+        {
+            return Task.FromResult(FailCatalog("Semantic retrieval result is required."));
+        }
+
+        if (!string.IsNullOrWhiteSpace(retrieval.Error))
+        {
+            return Task.FromResult(FailCatalog(
+                "Semantic metadata retrieval failed: " + retrieval.Error));
+        }
+
+        if (retrieval.EntityHits.Count == 0)
+        {
+            return Task.FromResult(FailCatalog(
+                "Semantic metadata retrieval returned no approved entities."));
+        }
+
+        try
+        {
+            var approved = ResolveApprovedEntitiesForCatalog();
+            var byName = approved.ToDictionary(
+                e => e.LogicalName,
+                StringComparer.OrdinalIgnoreCase);
+
+            var selectedEntityNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var hit in retrieval.EntityHits)
+            {
+                var name = hit.Document.EntityLogicalName;
+                if (_policy.IsApproved(name) && byName.ContainsKey(name))
+                {
+                    selectedEntityNames.Add(name);
+                }
+            }
+
+            if (selectedEntityNames.Count == 0)
+            {
+                return Task.FromResult(FailCatalog(
+                    "Semantic retrieval selected no authorized CRM entities."));
+            }
+
+            var selectedSchemas = retrieval.RelationshipHits
+                .Select(h => h.Document.RelationshipSchemaName)
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Cast<string>()
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            // Ensure relationship endpoints are present for internally consistent join metadata.
+            foreach (var schema in selectedSchemas)
+            {
+                foreach (var entity in approved)
+                {
+                    var rel = entity.Relationships.FirstOrDefault(r =>
+                        r.IsApproved &&
+                        r.SchemaName.Equals(schema, StringComparison.OrdinalIgnoreCase));
+                    if (rel is null)
+                    {
+                        continue;
+                    }
+
+                    if (_policy.IsApproved(rel.ReferencingEntity) && byName.ContainsKey(rel.ReferencingEntity))
+                    {
+                        selectedEntityNames.Add(rel.ReferencingEntity);
+                    }
+
+                    if (_policy.IsApproved(rel.ReferencedEntity) && byName.ContainsKey(rel.ReferencedEntity))
+                    {
+                        selectedEntityNames.Add(rel.ReferencedEntity);
+                    }
+                }
+            }
+
+            var selectedAttrKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var hit in retrieval.AttributeHits)
+            {
+                if (string.IsNullOrWhiteSpace(hit.Document.AttributeLogicalName))
+                {
+                    continue;
+                }
+
+                selectedAttrKeys.Add(
+                    hit.Document.EntityLogicalName + "." + hit.Document.AttributeLogicalName);
+            }
+
+            var selectedEntities = selectedEntityNames
+                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                .Select(n => byName[n])
+                .ToList();
+
+            var catalog = BuildFilteredCatalog(selectedEntities, selectedAttrKeys, selectedSchemas);
+            var json = SerializeFull(catalog, mode: "poc-semantic-selected-metadata");
+            var block = BuildDelimitedBlock(json);
+            var sentAttrCount = catalog.Detail.Sum(e => e.Attributes.Count);
+            var sentRelCount = catalog.Detail.Sum(e => e.Relationships.Count);
+
+            _logger.LogInformation(
+                "Semantic AI metadata catalog: IncludedEntityCount={IncludedEntityCount}, " +
+                "IncludedAttributeCount={IncludedAttributeCount}, IncludedRelationshipCount={IncludedRelationshipCount}, " +
+                "CatalogCharacters={CatalogCharacters}, Source=SemanticRetrieval",
+                catalog.Detail.Count,
+                sentAttrCount,
+                sentRelCount,
+                block.Length);
+
+            return Task.FromResult(new CrmAiMetadataCatalogBuildResult
+            {
+                Enabled = true,
+                Success = true,
+                Catalog = catalog,
+                FormattedBlock = block,
+                EntityCount = catalog.Detail.Count,
+                AttributeCount = sentAttrCount,
+                CharacterCount = block.Length,
+                Source = "SemanticRetrieval",
+                ApprovedEntityCount = _policy.ApprovedLogicalNames.Count,
+                IncludedEntityCount = catalog.Detail.Count,
+                IncludedAttributeCount = sentAttrCount,
+                IncludedRelationshipCount = sentRelCount,
+                OriginalCharacterCount = block.Length,
+                FinalCharacterCount = block.Length,
+                TruncationApplied = false
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to build semantic AI metadata catalog.");
+            return Task.FromResult(FailCatalog("Metadata catalog unavailable."));
+        }
+    }
+
+    private static CrmAiMetadataCatalogBuildResult FailCatalog(string error) =>
+        new()
+        {
+            Enabled = true,
+            Success = false,
+            Error = error,
+            FormattedBlock = string.Empty,
+            Source = "SemanticRetrieval"
+        };
+
+    private CrmAiMetadataCatalogBuildResult BuildCatalogCore(
+        IReadOnlyList<CrmEntityMetadata> entities,
+        string mode,
+        string? source)
     {
         if (!_options.AllowSendApprovedMetadataCatalogToAi)
         {
@@ -67,7 +230,7 @@ public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
         try
         {
             var catalog = BuildFullCatalog(entities);
-            var json = SerializeFull(catalog);
+            var json = SerializeFull(catalog, mode);
             var block = BuildDelimitedBlock(json);
 
             var discoveredAttrCount = entities.Sum(e => e.Attributes.Count(a => a.IsValidForRead));
@@ -136,7 +299,7 @@ public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
                 sentRelCount,
                 block.Length,
                 missing.Count == 0 ? "(none)" : string.Join(" | ", missing),
-                DescribeSource(entities));
+                source ?? DescribeSource(entities));
 
             return new CrmAiMetadataCatalogBuildResult
             {
@@ -147,7 +310,7 @@ public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
                 EntityCount = catalog.Detail.Count,
                 AttributeCount = sentAttrCount,
                 CharacterCount = block.Length,
-                Source = DescribeSource(entities),
+                Source = source ?? DescribeSource(entities),
                 ApprovedEntityCount = _policy.ApprovedLogicalNames.Count,
                 IncludedEntityCount = catalog.Detail.Count,
                 IncludedAttributeCount = sentAttrCount,
@@ -224,7 +387,19 @@ public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
             : "Seed";
     }
 
-    private CrmAiMetadataCatalog BuildFullCatalog(IReadOnlyList<CrmEntityMetadata> entities)
+    private CrmAiMetadataCatalog BuildFullCatalog(IReadOnlyList<CrmEntityMetadata> entities) =>
+        BuildCatalogProjection(entities, attributeFilter: null, relationshipSchemas: null);
+
+    private CrmAiMetadataCatalog BuildFilteredCatalog(
+        IReadOnlyList<CrmEntityMetadata> entities,
+        HashSet<string> selectedAttrKeys,
+        HashSet<string> selectedSchemas) =>
+        BuildCatalogProjection(entities, selectedAttrKeys, selectedSchemas);
+
+    private CrmAiMetadataCatalog BuildCatalogProjection(
+        IReadOnlyList<CrmEntityMetadata> entities,
+        HashSet<string>? attributeFilter,
+        HashSet<string>? relationshipSchemas)
     {
         var index = entities.Select(e => new CrmAiCatalogEntityIndex
         {
@@ -238,7 +413,9 @@ public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
             PrimaryNameAttribute = e.PrimaryNameAttribute
         }).ToArray();
 
-        var detail = entities.Select(MapFullDetail).ToArray();
+        var detail = entities
+            .Select(e => MapDetail(e, attributeFilter, relationshipSchemas))
+            .ToArray();
 
         var flat = detail.Select(d => new CrmAiCatalogEntity
         {
@@ -260,43 +437,48 @@ public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
         };
     }
 
-    private CrmAiCatalogEntityDetail MapFullDetail(CrmEntityMetadata entity)
+    private CrmAiCatalogEntityDetail MapDetail(
+        CrmEntityMetadata entity,
+        HashSet<string>? attributeFilter,
+        HashSet<string>? relationshipSchemas)
     {
+        var requiredStructural = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(entity.PrimaryIdAttribute))
+        {
+            requiredStructural.Add(entity.PrimaryIdAttribute);
+        }
+
+        if (!string.IsNullOrWhiteSpace(entity.PrimaryNameAttribute))
+        {
+            requiredStructural.Add(entity.PrimaryNameAttribute);
+        }
+
         var attributes = entity.Attributes
             .Where(a => a.IsValidForRead)
-            .OrderBy(a => a.LogicalName, StringComparer.OrdinalIgnoreCase)
-            .Select(a =>
+            .Where(a =>
             {
-                var catalogAttr = new CrmAiCatalogAttribute
+                if (attributeFilter is null)
                 {
-                    LogicalName = a.LogicalName,
-                    DisplayName = SanitizeLabel(a.DisplayName),
-                    Type = a.Kind.ToString(),
-                    Filterable = a.IsFilterable,
-                    Sortable = a.IsSortable,
-                    Selectable = a.IsValidForRead
-                };
-
-                if (a.OptionSetByValue.Count > 0)
-                {
-                    catalogAttr.Options = a.OptionSetByValue
-                        .OrderBy(kv => kv.Key)
-                        .Select(kv => new CrmAiCatalogOption
-                        {
-                            Value = kv.Key,
-                            Label = SanitizeLabel(kv.Value) ?? kv.Key.ToString()
-                        })
-                        .ToArray();
+                    return true;
                 }
 
-                return catalogAttr;
+                if (requiredStructural.Contains(a.LogicalName))
+                {
+                    return true;
+                }
+
+                return attributeFilter.Contains(entity.LogicalName + "." + a.LogicalName);
             })
+            .OrderBy(a => a.LogicalName, StringComparer.OrdinalIgnoreCase)
+            .Select(MapAttribute)
             .ToArray();
 
         // AI catalog: only relationships the backend validator will accept (IsApproved).
         // Full discovered relationships remain on CrmEntityMetadata for validation/cache.
         var relationships = entity.Relationships
             .Where(r => r.IsApproved)
+            .Where(r => relationshipSchemas is null ||
+                        relationshipSchemas.Contains(r.SchemaName))
             .OrderBy(r => r.SchemaName, StringComparer.OrdinalIgnoreCase)
             .Select(r => new CrmAiCatalogRelationship
             {
@@ -311,6 +493,27 @@ public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
                 IsApproved = true
             })
             .ToArray();
+
+        // Structural lookup attributes for included relationships.
+        if (relationshipSchemas is not null && relationships.Length > 0)
+        {
+            var attrNames = attributes.Select(a => a.LogicalName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var extras = new List<CrmAiCatalogAttribute>();
+            foreach (var rel in relationships)
+            {
+                TryAddEndpointAttribute(entity, rel.ReferencingAttribute, attrNames, extras);
+                TryAddEndpointAttribute(entity, rel.ReferencedAttribute, attrNames, extras);
+            }
+
+            if (extras.Count > 0)
+            {
+                attributes = attributes
+                    .Concat(extras)
+                    .OrderBy(a => a.LogicalName, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            }
+        }
 
         return new CrmAiCatalogEntityDetail
         {
@@ -327,6 +530,57 @@ public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
             Attributes = attributes,
             Relationships = relationships
         };
+    }
+
+    private void TryAddEndpointAttribute(
+        CrmEntityMetadata entity,
+        string? attributeLogicalName,
+        HashSet<string> existing,
+        List<CrmAiCatalogAttribute> extras)
+    {
+        if (string.IsNullOrWhiteSpace(attributeLogicalName) ||
+            existing.Contains(attributeLogicalName))
+        {
+            return;
+        }
+
+        var attr = entity.Attributes.FirstOrDefault(a =>
+            a.IsValidForRead &&
+            a.LogicalName.Equals(attributeLogicalName, StringComparison.OrdinalIgnoreCase));
+        if (attr is null)
+        {
+            return;
+        }
+
+        existing.Add(attr.LogicalName);
+        extras.Add(MapAttribute(attr));
+    }
+
+    private static CrmAiCatalogAttribute MapAttribute(CrmAttributeMetadata a)
+    {
+        var catalogAttr = new CrmAiCatalogAttribute
+        {
+            LogicalName = a.LogicalName,
+            DisplayName = SanitizeLabel(a.DisplayName),
+            Type = a.Kind.ToString(),
+            Filterable = a.IsFilterable,
+            Sortable = a.IsSortable,
+            Selectable = a.IsValidForRead
+        };
+
+        if (a.OptionSetByValue.Count > 0)
+        {
+            catalogAttr.Options = a.OptionSetByValue
+                .OrderBy(kv => kv.Key)
+                .Select(kv => new CrmAiCatalogOption
+                {
+                    Value = kv.Key,
+                    Label = SanitizeLabel(kv.Value) ?? kv.Key.ToString()
+                })
+                .ToArray();
+        }
+
+        return catalogAttr;
     }
 
     private static string DirectionFor(string detailEntity, CrmRelationshipMetadata r)
@@ -349,12 +603,14 @@ public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
         return r.Kind.ToString();
     }
 
-    /// <summary>Full JSON catalog for POC — no abbreviated subsetting of attributes/relationships.</summary>
-    internal static string SerializeFull(CrmAiMetadataCatalog catalog)
+    /// <summary>JSON catalog for AI planning — schema only, never CRM records.</summary>
+    internal static string SerializeFull(
+        CrmAiMetadataCatalog catalog,
+        string mode = "poc-full-approved-metadata")
     {
         var root = new JsonObject
         {
-            ["mode"] = "poc-full-approved-metadata",
+            ["mode"] = mode,
             ["index"] = new JsonArray(catalog.Index.Select(e =>
             {
                 var o = new JsonObject { ["logicalName"] = e.LogicalName };

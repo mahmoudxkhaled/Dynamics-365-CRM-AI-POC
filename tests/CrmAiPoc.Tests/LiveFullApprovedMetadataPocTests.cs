@@ -95,6 +95,7 @@ public sealed class LiveFullApprovedMetadataPocTests
         services.AddSingleton<ICrmAuthorizationService, CrmAuthorizationService>();
         services.AddSingleton<IGenericCrmRepository, DynamicsGenericCrmRepository>();
         services.AddSingleton<ICrmAiMetadataCatalogService, CrmAiMetadataCatalogService>();
+        LiveSemanticDiRegistration.AddSemanticMetadataRetrieval(services);
         services.AddSingleton<LazyGroqChatClient>();
         services.AddSingleton<RecordingChatClient>();
         services.AddSingleton<IChatClient>(sp => sp.GetRequiredService<RecordingChatClient>());

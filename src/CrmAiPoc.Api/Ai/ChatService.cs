@@ -31,8 +31,18 @@ public sealed partial class ChatService
         - Prefer purpose/label matching the user's business wording.
         - Use relationship SchemaName only when copying an exact catalog schemaName value. Never invent SchemaNames.
         - Nested links max depth 2 / max 3 linked entities.
-        - When intent is genuinely ambiguous across approved entities, relationships, or date periods, ask a short English clarification instead of guessing.
         - Do not invent CRM records. Never emit OData, SQL, FetchXML, or URLs.
+
+        Ambiguity handling (same single response — never a second AI call):
+        - When the question is clear enough, call query_crm as usual. Do not ask unnecessary clarifications.
+        - When intent is genuinely ambiguous across catalog attributes, relationships, or interpretations and calling query_crm would require guessing:
+          DO NOT call query_crm. Respond with ONLY a JSON object (no markdown fences, no other prose):
+          {"type":"clarification","message":"Which of these queries would you like to run?","suggestions":[{"label":"By Created On","question":"Show the latest 5 Sales Orders by Created On.","entityLogicalName":"salesorder","attributeLogicalNames":["createdon"],"relationshipSchemaNames":[]}]}
+        - Provide 2–4 suggestions. Each question must be a complete standalone English question.
+        - Preserve the user's unambiguous constraints (entity grain, limits, filters, sorting intent). Change only the ambiguous dimension.
+        - entityLogicalName, attributeLogicalNames, and relationshipSchemaNames MUST come from the APPROVED_CRM_METADATA_CATALOG. Never invent fields or SchemaNames.
+        - Prefer displayName values in the human-readable question text; keep logical names only in the JSON metadata fields.
+        - Labels are short (for UI chips); questions are full sentences the user can submit unchanged.
 
         Dates (preferred): relativeDateField=createdon|modifiedon plus dateRange object (or dateRangeJson).
         ALWAYS include kind. Canonical examples:
@@ -230,43 +240,80 @@ public sealed partial class ChatService
         var chatOptions = new ChatOptions
         {
             Tools = [queryCrmTool],
+            // Auto allows either query_crm or a structured clarification JSON text response.
+            ToolMode = ChatToolMode.Auto,
             Temperature = 0.1f
         };
 
+        var requestPayloadCharacters = outboundHistory.Sum(m => m.Text?.Length ?? 0);
         LogAiRequest(correlationId, userMessage, catalog, outboundHistory);
 
         ChatResponse modelResponse;
         try
         {
-            modelResponse = await GetResponseWithRetryAsync(outboundHistory, chatOptions, cancellationToken);
-        }
-        catch (Exception ex) when (IsProviderLimitOrTransportFailure(ex))
-        {
-            _logger.LogError(
-                ex,
-                "[AI ERROR] CorrelationId={CorrelationId} MetadataPayloadSize={MetadataPayloadSize} Message={Message}",
+            modelResponse = await GetResponseWithRetryAsync(
+                outboundHistory,
+                chatOptions,
                 correlationId,
-                catalog.CharacterCount,
-                ex.Message);
+                requestPayloadCharacters,
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogInformation(
+                "[AI ERROR] CorrelationId={CorrelationId} FailureKind=UserCancelled RequestPayloadCharacters={RequestPayloadCharacters}",
+                correlationId,
+                requestPayloadCharacters);
+            throw;
+        }
+        catch (Exception ex) when (AiProviderFailureClassifier.Classify(ex) == AiProviderFailureKind.ProviderLimit
+                                   || AiProviderFailureClassifier.IsProviderLimitMessage(ex.Message))
+        {
+            LogProviderFailure(
+                correlationId,
+                AiProviderFailureKind.ProviderLimit,
+                attempt: 1,
+                providerTimeoutSeconds: Math.Clamp(_aiOptions.ProviderTimeoutSeconds, 8, 90),
+                elapsedMs: 0,
+                requestPayloadCharacters,
+                ex);
             return CreateResponse(
                 session,
                 $"The AI provider rejected or failed the request (payload chars={catalog.CharacterCount}): {ex.Message}",
                 outboundWasSafe: audit.SafeForLiveCrm);
         }
-        catch (Exception ex) when (ex is OperationCanceledException or TimeoutException or HttpRequestException
-                                   || ex.GetType().Name.Contains("ClientResult", StringComparison.Ordinal)
-                                   || ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
-                                   || ex.Message.Contains("canceled", StringComparison.OrdinalIgnoreCase)
-                                   || ex.Message.Contains("cancelled", StringComparison.OrdinalIgnoreCase))
+        catch (TimeoutException ex)
         {
-            _logger.LogWarning(
-                ex,
-                "[AI ERROR] CorrelationId={CorrelationId} timed out/failed; MetadataPayloadSize={MetadataPayloadSize}.",
+            LogProviderFailure(
                 correlationId,
-                catalog.CharacterCount);
+                AiProviderFailureKind.ClientTimeout,
+                attempt: 1,
+                providerTimeoutSeconds: Math.Clamp(_aiOptions.ProviderTimeoutSeconds, 8, 90),
+                elapsedMs: 0,
+                requestPayloadCharacters,
+                ex);
             return CreateResponse(
                 session,
                 "The AI planner did not respond in time. Please retry your question.",
+                outboundWasSafe: audit.SafeForLiveCrm);
+        }
+        catch (Exception ex) when (ex is HttpRequestException
+                                   || ex.GetType().Name.Contains("ClientResult", StringComparison.Ordinal))
+        {
+            var kind = AiProviderFailureClassifier.Classify(ex);
+            LogProviderFailure(
+                correlationId,
+                kind,
+                attempt: 1,
+                providerTimeoutSeconds: Math.Clamp(_aiOptions.ProviderTimeoutSeconds, 8, 90),
+                elapsedMs: 0,
+                requestPayloadCharacters,
+                ex);
+            return CreateResponse(
+                session,
+                kind == AiProviderFailureKind.Http400
+                    ? "The AI planner could not use the CRM planning tools for this question. Please rephrase and try again."
+                    : "The AI planner did not respond in time. Please retry your question.",
                 outboundWasSafe: audit.SafeForLiveCrm);
         }
 
@@ -278,13 +325,21 @@ public sealed partial class ChatService
 
         if (functionCalls.Count == 0)
         {
-            var text = LocalCrmReplyFormatter.FormatRefusalOrText(modelResponse.Text, "en");
-            return CreateResponse(session, text, outboundWasSafe: audit.SafeForLiveCrm);
+            return HandleTextOrClarificationResponse(
+                session,
+                userMessage,
+                correlationId,
+                modelResponse.Text,
+                catalog,
+                audit.SafeForLiveCrm);
         }
 
         var call = functionCalls[0];
         if (string.Equals(call.Name, "query_crm", StringComparison.OrdinalIgnoreCase))
         {
+            _logger.LogInformation(
+                "[GROQ RESPONSE] CorrelationId={CorrelationId} ResponseType=query_crm ToolCalled=true",
+                correlationId);
             return await HandleQueryCrmAsync(
                 session, call, userMessage, correlationId, audit.SafeForLiveCrm, cancellationToken);
         }
@@ -294,6 +349,58 @@ public sealed partial class ChatService
             $"Tool '{call.Name}' is not exposed. Use query_crm only.",
             selectedTool: call.Name,
             outboundWasSafe: audit.SafeForLiveCrm);
+    }
+
+    private ChatResponseDto HandleTextOrClarificationResponse(
+        ConversationSession session,
+        string userMessage,
+        string correlationId,
+        string? modelText,
+        CrmAiMetadataCatalogBuildResult catalog,
+        bool outboundWasSafe)
+    {
+        var parsed = ClarificationResponseParser.TryParse(modelText);
+        if (parsed.IsClarificationAttempt)
+        {
+            var validated = ClarificationSuggestionValidator.Validate(parsed, catalog, _approvalPolicy);
+            if (!validated.Success)
+            {
+                _logger.LogWarning(
+                    "[CLARIFICATION] CorrelationId={CorrelationId} ValidationFailed={Error} OriginalQuestion={OriginalQuestion}",
+                    correlationId,
+                    validated.Error ?? parsed.Error ?? "unknown",
+                    TruncateForLog(userMessage, 500));
+                return CreateResponse(
+                    session,
+                    "I could not prepare clarification options for this question. " +
+                    "Please rephrase with a specific field or relationship from the approved CRM catalog.",
+                    outboundWasSafe: outboundWasSafe,
+                    responseType: "answer");
+            }
+
+            _logger.LogInformation(
+                "[GROQ RESPONSE] CorrelationId={CorrelationId} ResponseType=clarification ToolCalled=false SuggestionCount={SuggestionCount}",
+                correlationId,
+                validated.Suggestions.Count);
+            _logger.LogInformation(
+                "[CLARIFICATION] CorrelationId={CorrelationId} OriginalQuestion={OriginalQuestion} SuggestedQuestions=[{SuggestedQuestions}]",
+                correlationId,
+                TruncateForLog(userMessage, 500),
+                string.Join(" | ", validated.Suggestions.Select(s => s.Question)));
+
+            return CreateResponse(
+                session,
+                parsed.Message,
+                outboundWasSafe: outboundWasSafe,
+                responseType: "clarification",
+                suggestions: validated.Suggestions);
+        }
+
+        _logger.LogInformation(
+            "[GROQ RESPONSE] CorrelationId={CorrelationId} ResponseType=answer ToolCalled=false",
+            correlationId);
+        var text = LocalCrmReplyFormatter.FormatRefusalOrText(modelText, "en");
+        return CreateResponse(session, text, outboundWasSafe: outboundWasSafe, responseType: "answer");
     }
 
     private async Task<ChatResponseDto> HandleQueryCrmAsync(
@@ -607,12 +714,42 @@ public sealed partial class ChatService
 
         if (IsDevelopmentEnvironment() && !string.IsNullOrWhiteSpace(catalog.FormattedBlock))
         {
-            var path = Path.Combine(Path.GetTempPath(), "crm-poc-ai-request-metadata-catalog.txt");
-            File.WriteAllText(path, catalog.FormattedBlock);
+            TryWriteDevelopmentCatalogDump(correlationId, catalog.FormattedBlock);
+        }
+    }
+
+    /// <summary>
+    /// Development-only metadata dump. Failures must never terminate chat.
+    /// Unique per CorrelationId to avoid concurrent write collisions.
+    /// </summary>
+    private void TryWriteDevelopmentCatalogDump(string correlationId, string formattedBlock)
+    {
+        try
+        {
+            var safeId = string.IsNullOrWhiteSpace(correlationId)
+                ? Guid.NewGuid().ToString("N")[..12]
+                : correlationId;
+            foreach (var c in Path.GetInvalidFileNameChars())
+            {
+                safeId = safeId.Replace(c, '_');
+            }
+
+            var path = Path.Combine(
+                Path.GetTempPath(),
+                $"crm-poc-ai-request-metadata-catalog-{safeId}.txt");
+            File.WriteAllText(path, formattedBlock);
             _logger.LogInformation(
                 "[GROQ REQUEST] CorrelationId={CorrelationId} MetadataDumpPath={Path}",
                 correlationId,
                 path);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "[AI DIAGNOSTIC] CorrelationId={CorrelationId} FailureKind=DiagnosticWriteFailed " +
+                "Message=Development catalog dump skipped; chat continues.",
+                correlationId);
         }
     }
 
@@ -687,71 +824,98 @@ public sealed partial class ChatService
     private async Task<ChatResponse> GetResponseWithRetryAsync(
         IReadOnlyList<ChatMessage> messages,
         ChatOptions chatOptions,
+        string correlationId,
+        int requestPayloadCharacters,
         CancellationToken cancellationToken)
     {
         var timeoutSeconds = Math.Clamp(_aiOptions.ProviderTimeoutSeconds, 8, 90);
+        // Transient HTTP 429/503 only — client timeouts do not consume a second full wait.
         const int maxAttempts = 2;
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             attemptCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+            var sw = Stopwatch.StartNew();
             try
             {
                 return await _chatClient.GetResponseAsync(messages, chatOptions, attemptCts.Token);
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                _logger.LogWarning(
-                    "AI provider timed out after {TimeoutSeconds}s (attempt {Attempt}/{Max}).",
-                    timeoutSeconds,
-                    attempt,
-                    maxAttempts);
-                if (attempt >= maxAttempts)
-                {
-                    throw new TimeoutException(
-                        $"AI provider did not respond within {timeoutSeconds}s.");
-                }
+                sw.Stop();
+                throw;
             }
-            catch (Exception ex) when (attempt < maxAttempts && IsTransientError(ex))
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
-                var delay = TimeSpan.FromSeconds(attempt * 2);
-                _logger.LogWarning(
-                    ex,
-                    "AI provider transient error (attempt {Attempt}/{Max}). Retrying in {DelaySeconds}s.",
+                sw.Stop();
+                LogProviderFailure(
+                    correlationId,
+                    AiProviderFailureKind.ClientTimeout,
                     attempt,
-                    maxAttempts,
-                    delay.TotalSeconds);
-                await Task.Delay(delay, cancellationToken);
+                    timeoutSeconds,
+                    sw.ElapsedMilliseconds,
+                    requestPayloadCharacters,
+                    ex);
+                throw new TimeoutException(
+                    $"AI provider did not respond within {timeoutSeconds}s.",
+                    ex);
+            }
+            catch (Exception ex)
+            {
+                sw.Stop();
+                var kind = AiProviderFailureClassifier.Classify(ex);
+                LogProviderFailure(
+                    correlationId,
+                    kind,
+                    attempt,
+                    timeoutSeconds,
+                    sw.ElapsedMilliseconds,
+                    requestPayloadCharacters,
+                    ex);
+
+                if (attempt < maxAttempts && AiProviderFailureClassifier.IsTransient(kind))
+                {
+                    var delay = AiProviderFailureClassifier.GetTransientRetryDelay(ex, attempt);
+                    _logger.LogWarning(
+                        "[AI RETRY] CorrelationId={CorrelationId} FailureKind={FailureKind} Attempt={Attempt}/{Max} " +
+                        "DelayMs={DelayMs} ProviderTimeoutSeconds={ProviderTimeoutSeconds}",
+                        correlationId,
+                        kind,
+                        attempt,
+                        maxAttempts,
+                        (int)delay.TotalMilliseconds,
+                        timeoutSeconds);
+                    await Task.Delay(delay, cancellationToken);
+                    continue;
+                }
+
+                throw;
             }
         }
 
         throw new InvalidOperationException("AI request failed after retries.");
     }
 
-    private static bool IsTransientError(Exception ex)
+    private void LogProviderFailure(
+        string correlationId,
+        AiProviderFailureKind failureKind,
+        int attempt,
+        int providerTimeoutSeconds,
+        long elapsedMs,
+        int requestPayloadCharacters,
+        Exception ex)
     {
-        var message = ex.Message ?? string.Empty;
-        return message.Contains("high demand", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("try again", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("temporarily", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("429", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("503", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsProviderLimitOrTransportFailure(Exception ex)
-    {
-        var message = ex.Message ?? string.Empty;
-        return message.Contains("context length", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("context_window", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("maximum context", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("too many tokens", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("token limit", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("request too large", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("payload too large", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("413", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("max_tokens", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("reduce the length", StringComparison.OrdinalIgnoreCase);
+        _logger.LogWarning(
+            ex,
+            "[AI ERROR] CorrelationId={CorrelationId} FailureKind={FailureKind} Attempt={Attempt} " +
+            "ProviderTimeoutSeconds={ProviderTimeoutSeconds} ElapsedMs={ElapsedMs} " +
+            "RequestPayloadCharacters={RequestPayloadCharacters}",
+            correlationId,
+            failureKind,
+            attempt,
+            providerTimeoutSeconds,
+            elapsedMs,
+            requestPayloadCharacters);
     }
 
     private static string FormatToolArguments(IDictionary<string, object?>? arguments)
@@ -818,12 +982,16 @@ public sealed partial class ChatService
         string? selectedTool = null,
         object? data = null,
         Guid? whoAmI = null,
-        string? crmProvider = null) =>
+        string? crmProvider = null,
+        string? responseType = "answer",
+        IReadOnlyList<ClarificationSuggestionDto>? suggestions = null) =>
         new()
         {
             ConversationId = session.ConversationId,
             Reply = reply,
             ProviderHint = ResolveProviderHint(),
+            ResponseType = responseType,
+            Suggestions = suggestions,
             PrivacySafeToolExecution = true,
             SelectedTool = selectedTool,
             StructuredData = data,

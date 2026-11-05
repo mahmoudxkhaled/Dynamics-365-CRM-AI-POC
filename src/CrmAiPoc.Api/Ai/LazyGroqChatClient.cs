@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.ClientModel.Primitives;
 using System.Runtime.CompilerServices;
 using CrmAiPoc.Api.Configuration;
 using Microsoft.Extensions.AI;
@@ -14,12 +15,16 @@ namespace CrmAiPoc.Api.Ai;
 public sealed class LazyGroqChatClient : IChatClient
 {
     private readonly IOptions<GroqOptions> _options;
+    private readonly ILogger<LazyGroqChatClient> _logger;
     private readonly object _gate = new();
     private IChatClient? _inner;
 
-    public LazyGroqChatClient(IOptions<GroqOptions> options)
+    public LazyGroqChatClient(
+        IOptions<GroqOptions> options,
+        ILogger<LazyGroqChatClient> logger)
     {
         _options = options;
+        _logger = logger;
     }
 
     public Task<ChatResponse> GetResponseAsync(
@@ -76,12 +81,26 @@ public sealed class LazyGroqChatClient : IChatClient
                 ? "https://api.groq.com/openai/v1"
                 : options.BaseUrl.TrimEnd('/');
 
+            // Evidence: System.ClientModel ClientRetryPolicy defaults to maxRetries=3 with
+            // exponential backoff (0.8s base, up to 60s) and retries 429/5xx inside WaitAsync.
+            // That can consume most of Ai:ProviderTimeoutSeconds=60 before ChatService sees
+            // the failure, hiding FailureKind=Http429 from application logs.
+            // Disable SDK retries so app-level timeout + bounded 429/503 handling remain authoritative.
+            const int sdkMaxRetries = 0;
             var openAiClient = new OpenAIClient(
                 new ApiKeyCredential(options.ApiKey),
                 new OpenAIClientOptions
                 {
-                    Endpoint = new Uri(baseUrl)
+                    Endpoint = new Uri(baseUrl),
+                    RetryPolicy = new ClientRetryPolicy(sdkMaxRetries)
                 });
+
+            _logger.LogInformation(
+                "[GROQ CLIENT] Endpoint={Endpoint} Model={Model} SdkMaxRetries={SdkMaxRetries} " +
+                "Note=SDK internal retries disabled; ChatService owns timeout and transient retry policy.",
+                baseUrl,
+                model,
+                sdkMaxRetries);
 
             // Raw client (no UseFunctionInvocation). ChatService executes tools locally
             // so live CRM records are never forwarded back to Groq.

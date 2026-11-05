@@ -8,6 +8,8 @@ import { Component, EventEmitter, Input, Output } from '@angular/core';
 })
 export class ChatInputComponent {
   @Input() disabled = false;
+  /** When > 0, shows a wait message after the previous request. */
+  @Input() cooldownSeconds = 0;
   @Output() send = new EventEmitter<string>();
 
   message = '';

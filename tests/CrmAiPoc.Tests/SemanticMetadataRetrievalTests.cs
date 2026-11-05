@@ -81,17 +81,53 @@ public sealed class SemanticMetadataRetrievalTests
                 inputs.Select((_, i) => MakeUnitVector(i)).ToArray());
         }
 
-        var s1 = await index.EnsureBuiltAsync(hash, docs, Embed, CancellationToken.None);
-        var s2 = await index.EnsureBuiltAsync(hash, docs, Embed, CancellationToken.None);
+        var (s1, rebuilt1) = await index.EnsureBuiltAsync(hash, docs, Embed, CancellationToken.None);
+        var (s2, rebuilt2) = await index.EnsureBuiltAsync(hash, docs, Embed, CancellationToken.None);
         Assert.Same(s1, s2);
+        Assert.True(rebuilt1);
+        Assert.False(rebuilt2);
         Assert.Equal(1, embedCalls);
 
         var richer = MakeProductEntity(extraAttr: true);
         var docs2 = MetadataDocumentBuilder.Build([richer]);
         var hash2 = MetadataDocumentBuilder.ComputeContentHash([richer]);
-        var s3 = await index.EnsureBuiltAsync(hash2, docs2, Embed, CancellationToken.None);
+        var (s3, rebuilt3) = await index.EnsureBuiltAsync(hash2, docs2, Embed, CancellationToken.None);
         Assert.NotSame(s1, s3);
+        Assert.True(rebuilt3);
         Assert.Equal(2, embedCalls);
+    }
+
+    [Fact]
+    public async Task Index_Concurrent_Callers_Single_Flight_One_Embed()
+    {
+        var index = new InMemorySemanticMetadataIndex();
+        var docs = MetadataDocumentBuilder.Build([MakeProductEntity()]);
+        var hash = MetadataDocumentBuilder.ComputeContentHash([MakeProductEntity()]);
+        var embedCalls = 0;
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<IReadOnlyList<float[]>> Embed(IReadOnlyList<string> inputs, CancellationToken _)
+        {
+            Interlocked.Increment(ref embedCalls);
+            return gate.Task.ContinueWith(
+                _ => (IReadOnlyList<float[]>)inputs.Select((_, i) => MakeUnitVector(i)).ToArray(),
+                TaskScheduler.Default);
+        }
+
+        var t1 = index.EnsureBuiltAsync(hash, docs, Embed, CancellationToken.None);
+        var t2 = index.EnsureBuiltAsync(hash, docs, Embed, CancellationToken.None);
+
+        // Allow the in-flight embed to complete after both callers are waiting/building.
+        await Task.Delay(50);
+        gate.SetResult();
+
+        var r1 = await t1;
+        var r2 = await t2;
+
+        Assert.Same(r1.Snapshot, r2.Snapshot);
+        Assert.Equal(1, embedCalls);
+        Assert.True(r1.Rebuilt ^ r2.Rebuilt); // exactly one reports the actual rebuild
+        Assert.True(r1.Rebuilt || r2.Rebuilt);
     }
 
     [Fact]

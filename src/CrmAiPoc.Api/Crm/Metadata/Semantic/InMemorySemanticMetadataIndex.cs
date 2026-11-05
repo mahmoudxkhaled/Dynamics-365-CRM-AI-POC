@@ -3,7 +3,8 @@ using System.Collections.Concurrent;
 namespace CrmAiPoc.Api.Crm.Metadata.Semantic;
 
 /// <summary>
-/// In-memory embedding index keyed by metadata content hash. Thread-safe rebuild.
+/// In-memory embedding index keyed by metadata content hash.
+/// Concurrent callers single-flight through one rebuild for a given hash.
 /// </summary>
 public sealed class InMemorySemanticMetadataIndex
 {
@@ -17,7 +18,12 @@ public sealed class InMemorySemanticMetadataIndex
 
     public string? ContentHash => _snapshot?.ContentHash;
 
-    public async Task<IndexSnapshot> EnsureBuiltAsync(
+    /// <summary>
+    /// Ensures an index snapshot exists for <paramref name="contentHash"/>.
+    /// Only one embed rebuild runs at a time; waiters reuse the same snapshot.
+    /// <paramref name="rebuilt"/> is true only for the caller that performed the embed.
+    /// </summary>
+    public async Task<(IndexSnapshot Snapshot, bool Rebuilt)> EnsureBuiltAsync(
         string contentHash,
         IReadOnlyList<MetadataSearchDocument> documents,
         Func<IReadOnlyList<string>, CancellationToken, Task<IReadOnlyList<float[]>>> embedBatch,
@@ -27,7 +33,7 @@ public sealed class InMemorySemanticMetadataIndex
         if (current is not null &&
             current.ContentHash.Equals(contentHash, StringComparison.Ordinal))
         {
-            return current;
+            return (current, Rebuilt: false);
         }
 
         await _rebuildGate.WaitAsync(cancellationToken);
@@ -37,7 +43,8 @@ public sealed class InMemorySemanticMetadataIndex
             if (current is not null &&
                 current.ContentHash.Equals(contentHash, StringComparison.Ordinal))
             {
-                return current;
+                // Another caller already completed the shared build while we waited.
+                return (current, Rebuilt: false);
             }
 
             _buildLocks[contentHash] = 0;
@@ -63,7 +70,7 @@ public sealed class InMemorySemanticMetadataIndex
 
                 var snapshot = new IndexSnapshot(contentHash, vectors);
                 _snapshot = snapshot;
-                return snapshot;
+                return (snapshot, Rebuilt: true);
             }
             finally
             {

@@ -62,14 +62,19 @@ public sealed class SemanticCrmMetadataRetriever : ISemanticCrmMetadataRetriever
 
             var hash = MetadataDocumentBuilder.ComputeContentHash(approved);
             var docs = MetadataDocumentBuilder.Build(approved);
-            var beforeHash = _index.ContentHash;
-            var snapshot = await _index.EnsureBuiltAsync(
+            var (snapshot, rebuilt) = await _index.EnsureBuiltAsync(
                 hash,
                 docs,
                 async (inputs, ct) => await EmbedInChunksAsync(inputs, ct),
                 cancellationToken);
-            var rebuilt = beforeHash is null ||
-                          !beforeHash.Equals(snapshot.ContentHash, StringComparison.Ordinal);
+
+            _logger.LogInformation(
+                "[SEMANTIC INDEX] ContentHash={ContentHash} IndexedDocumentCount={IndexedDocumentCount} " +
+                "IndexRebuilt={IndexRebuilt} IndexInitMode={IndexInitMode}",
+                snapshot.ContentHash,
+                snapshot.Vectors.Count,
+                rebuilt,
+                rebuilt ? "Built" : "Reused");
 
             var queryVector = await _embeddings.EmbedAsync(
                 MetadataDocumentBuilder.PrefixQuery(question),

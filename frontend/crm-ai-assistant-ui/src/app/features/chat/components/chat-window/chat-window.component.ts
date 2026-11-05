@@ -2,6 +2,7 @@ import {
   AfterViewChecked,
   Component,
   ElementRef,
+  OnDestroy,
   OnInit,
   ViewChild
 } from '@angular/core';
@@ -14,8 +15,11 @@ import { ChatService } from '../../../../core/services/chat.service';
   styleUrl: './chat-window.component.scss',
   standalone: false
 })
-export class ChatWindowComponent implements OnInit, AfterViewChecked {
+export class ChatWindowComponent implements OnInit, AfterViewChecked, OnDestroy {
   @ViewChild('chatScroll') chatScroll?: ElementRef<HTMLElement>;
+
+  /** Minimum gap between /api/chat requests (rate-limit / concurrency guard). */
+  private static readonly RequestCooldownMs = 60_000;
 
   /** Supported suggested questions (read-only CRM scenarios only). */
   readonly suggestedQuestions: string[] = [
@@ -30,9 +34,13 @@ export class ChatWindowComponent implements OnInit, AfterViewChecked {
   messages: ChatUiMessage[] = [];
   loading = false;
   conversationId: string | null = null;
+  /** Seconds remaining before the next request is allowed; 0 means ready. */
+  cooldownRemainingSeconds = 0;
 
   private shouldScroll = false;
   private nextId = 1;
+  private cooldownUntilMs = 0;
+  private cooldownTimerId: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly chatService: ChatService) {}
 
@@ -43,8 +51,16 @@ export class ChatWindowComponent implements OnInit, AfterViewChecked {
     });
   }
 
+  ngOnDestroy(): void {
+    this.clearCooldownTimer();
+  }
+
+  get inputBlocked(): boolean {
+    return this.loading || this.cooldownRemainingSeconds > 0;
+  }
+
   get showSuggestions(): boolean {
-    return !this.loading && this.messages.every((m) => m.role === 'meta');
+    return !this.inputBlocked && this.messages.every((m) => m.role === 'meta');
   }
 
   ngAfterViewChecked(): void {
@@ -58,24 +74,39 @@ export class ChatWindowComponent implements OnInit, AfterViewChecked {
     this.onSend(question);
   }
 
+  /** Clicked AI clarification: submit the complete suggested question as a new independent /api/chat request. */
+  onClarificationSuggestion(question: string): void {
+    this.onSend(question);
+  }
+
   onSend(message: string): void {
-    if (this.loading) {
+    if (this.inputBlocked) {
       return;
     }
 
-    this.push({ role: 'user', text: message });
-    this.loading = true;
+    const trimmed = (message || '').trim();
+    if (!trimmed) {
+      return;
+    }
 
-    this.chatService.sendMessage(message, this.conversationId).subscribe({
+    this.push({ role: 'user', text: trimmed });
+    this.loading = true;
+    this.beginRequestCooldown();
+
+    // Independent request: only the selected/complete question text is sent (no chat history to Groq).
+    this.chatService.sendMessage(trimmed, this.conversationId).subscribe({
       next: (data) => {
         this.conversationId = data.conversationId;
+        const responseType = data.responseType || 'answer';
         this.push({
           role: 'assistant',
           reply: data.reply,
           text: data.reply,
-          structuredData: data.structuredData ?? null
+          structuredData: data.structuredData ?? null,
+          responseType,
+          suggestions: data.suggestions ?? null
         });
-        if (data.privacySafeToolExecution) {
+        if (data.privacySafeToolExecution && responseType !== 'clarification') {
           this.push({
             role: 'meta',
             text:
@@ -112,6 +143,29 @@ export class ChatWindowComponent implements OnInit, AfterViewChecked {
       }
     ];
     this.shouldScroll = true;
+  }
+
+  private beginRequestCooldown(): void {
+    this.cooldownUntilMs = Date.now() + ChatWindowComponent.RequestCooldownMs;
+    this.tickCooldown();
+    this.clearCooldownTimer();
+    this.cooldownTimerId = setInterval(() => this.tickCooldown(), 250);
+  }
+
+  private tickCooldown(): void {
+    const remainingMs = Math.max(0, this.cooldownUntilMs - Date.now());
+    this.cooldownRemainingSeconds = Math.ceil(remainingMs / 1000);
+    if (remainingMs <= 0) {
+      this.clearCooldownTimer();
+      this.cooldownRemainingSeconds = 0;
+    }
+  }
+
+  private clearCooldownTimer(): void {
+    if (this.cooldownTimerId !== null) {
+      clearInterval(this.cooldownTimerId);
+      this.cooldownTimerId = null;
+    }
   }
 
   private scrollToBottom(): void {

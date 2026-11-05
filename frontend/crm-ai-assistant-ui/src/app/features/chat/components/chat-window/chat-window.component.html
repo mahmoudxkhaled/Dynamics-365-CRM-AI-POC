@@ -4,7 +4,11 @@
   </div>
   <div class="chat" #chatScroll>
     @for (msg of messages; track trackById($index, msg)) {
-      <app-chat-message [message]="msg" />
+      <app-chat-message
+        [message]="msg"
+        [suggestionsDisabled]="inputBlocked"
+        (suggestionSelected)="onClarificationSuggestion($event)"
+      />
     }
 
     @if (showSuggestions) {
@@ -15,7 +19,7 @@
             <button
               type="button"
               class="suggestion-chip"
-              [disabled]="loading"
+              [disabled]="inputBlocked"
               (click)="onSuggestion(q)"
             >
               {{ q }}
@@ -25,5 +29,9 @@
       </div>
     }
   </div>
-  <app-chat-input [disabled]="loading" (send)="onSend($event)" />
+  <app-chat-input
+    [disabled]="inputBlocked"
+    [cooldownSeconds]="cooldownRemainingSeconds"
+    (send)="onSend($event)"
+  />
 </section>

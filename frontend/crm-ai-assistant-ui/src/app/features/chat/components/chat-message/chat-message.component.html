@@ -2,6 +2,23 @@
   <div class="msg meta">{{ message.text }}</div>
 } @else if (message.role === 'user') {
   <div class="msg user">{{ message.text }}</div>
+} @else if (mode === 'clarification') {
+  <div class="msg assistant clarification">
+    <p class="clarification-message">{{ message.text || message.reply }}</p>
+    <div class="clarification-options" role="group" aria-label="Clarification suggestions">
+      @for (suggestion of message.suggestions; track suggestion.question) {
+        <button
+          type="button"
+          class="clarification-chip"
+          [disabled]="suggestionsDisabled"
+          (click)="onSuggestionClick(suggestion)"
+        >
+          <span class="clarification-label">{{ suggestion.label }}</span>
+          <span class="clarification-question">{{ suggestion.question }}</span>
+        </button>
+      }
+    </div>
+  </div>
 } @else if (mode === 'count') {
   <div class="msg assistant">
     <div class="count-badge">{{ countLabel }}: {{ message.structuredData?.count }}{{ countCapped }}</div>

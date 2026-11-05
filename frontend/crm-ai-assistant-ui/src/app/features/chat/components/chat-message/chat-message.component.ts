@@ -1,5 +1,5 @@
-import { Component, Input, OnChanges, SimpleChanges } from '@angular/core';
-import { ChatUiMessage } from '../../../../core/models/chat-response.model';
+import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges } from '@angular/core';
+import { ChatUiMessage, ClarificationSuggestion } from '../../../../core/models/chat-response.model';
 import {
   extractRows,
   isCountResult,
@@ -15,8 +15,10 @@ import {
 })
 export class ChatMessageComponent implements OnChanges {
   @Input({ required: true }) message!: ChatUiMessage;
+  @Input() suggestionsDisabled = false;
+  @Output() readonly suggestionSelected = new EventEmitter<string>();
 
-  mode: 'plain' | 'count' | 'table' = 'plain';
+  mode: 'plain' | 'count' | 'table' | 'clarification' = 'plain';
   summary = '';
   summaryFirst = '';
   summaryRest = '';
@@ -29,13 +31,35 @@ export class ChatMessageComponent implements OnChanges {
     }
   }
 
+  onSuggestionClick(suggestion: ClarificationSuggestion): void {
+    const question = (suggestion.question || '').trim();
+    if (!question || this.suggestionsDisabled) {
+      return;
+    }
+    this.suggestionSelected.emit(question);
+  }
+
   private rebuild(): void {
     const msg = this.message;
     if (!msg) {
       return;
     }
 
-    if (msg.role === 'user' || msg.role === 'meta' || msg.error || !msg.structuredData) {
+    if (msg.role === 'user' || msg.role === 'meta' || msg.error) {
+      this.mode = 'plain';
+      return;
+    }
+
+    if (
+      msg.responseType === 'clarification' &&
+      Array.isArray(msg.suggestions) &&
+      msg.suggestions.length > 0
+    ) {
+      this.mode = 'clarification';
+      return;
+    }
+
+    if (!msg.structuredData) {
       this.mode = 'plain';
       return;
     }

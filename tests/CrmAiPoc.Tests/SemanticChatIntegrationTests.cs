@@ -37,9 +37,102 @@ public sealed class SemanticChatPipelineUnitTests
         Assert.Contains("poc-semantic-selected-metadata", harness.Recorder.LastCatalogText!, StringComparison.OrdinalIgnoreCase);
         // Text-only AI reply avoids exercising the mock CRM executor in this unit test.
         Assert.Null(response.SelectedTool);
+        Assert.Equal("answer", response.ResponseType);
+        Assert.Null(response.Suggestions);
         Assert.Contains("planned", response.Reply, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, harness.Semantic.CallCount);
         Assert.Equal("Show the latest 3 products.", harness.Semantic.LastQuestion);
+        Assert.Equal(0, harness.Crm.QueryCount);
+    }
+
+    [Fact]
+    public async Task Ambiguous_Question_Returns_Clarification_Without_Crm_Query()
+    {
+        var harness = await CreateHarnessAsync(
+            semanticError: null,
+            aiMode: RecordingChatClient.Mode.Clarification);
+        harness.Recorder.Reset();
+        harness.Crm.Reset();
+
+        var response = await harness.Chat.ChatAsync(
+            new ChatRequestDto { Message = "Show the latest 5 products." },
+            CancellationToken.None);
+
+        Assert.Equal(1, harness.Recorder.CallCount);
+        Assert.Equal(1, harness.Semantic.CallCount);
+        Assert.Equal(0, harness.Crm.QueryCount);
+        Assert.Equal("clarification", response.ResponseType);
+        Assert.Null(response.SelectedTool);
+        Assert.Null(response.CrmDataProvider);
+        Assert.NotNull(response.Suggestions);
+        Assert.Equal(2, response.Suggestions!.Count);
+        Assert.All(response.Suggestions, s =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(s.Label));
+            Assert.Contains("products", s.Question, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(' ', s.Question);
+        });
+        Assert.Contains("Which of these", response.Reply, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Malformed_Clarification_Returns_Safe_Error_Without_Crm()
+    {
+        var harness = await CreateHarnessAsync(
+            semanticError: null,
+            aiMode: RecordingChatClient.Mode.MalformedClarification);
+        harness.Crm.Reset();
+
+        var response = await harness.Chat.ChatAsync(
+            new ChatRequestDto { Message = "Show the latest 5 products." },
+            CancellationToken.None);
+
+        Assert.Equal(1, harness.Recorder.CallCount);
+        Assert.Equal(0, harness.Crm.QueryCount);
+        Assert.NotEqual("clarification", response.ResponseType);
+        Assert.Null(response.Suggestions);
+        Assert.Contains("could not prepare clarification", response.Reply, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Unauthorized_Field_Suggestion_Is_Rejected()
+    {
+        var harness = await CreateHarnessAsync(
+            semanticError: null,
+            aiMode: RecordingChatClient.Mode.UnauthorizedAttributeClarification);
+        harness.Crm.Reset();
+
+        var response = await harness.Chat.ChatAsync(
+            new ChatRequestDto { Message = "Show the latest 5 products." },
+            CancellationToken.None);
+
+        Assert.Equal(0, harness.Crm.QueryCount);
+        Assert.Null(response.Suggestions);
+        Assert.Contains("could not prepare clarification", response.Reply, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Selected_Clarification_Question_Triggers_Fresh_Semantic_Retrieval()
+    {
+        var harness = await CreateHarnessAsync(semanticError: null);
+        harness.Recorder.Reset();
+        harness.Semantic.Reset();
+
+        _ = await harness.Chat.ChatAsync(
+            new ChatRequestDto { Message = "Show the latest 5 products." },
+            CancellationToken.None);
+        Assert.Equal(1, harness.Semantic.CallCount);
+
+        // Clicked suggestion is a brand-new /api/chat message — no Groq history, fresh retrieval.
+        _ = await harness.Chat.ChatAsync(
+            new ChatRequestDto { Message = "Show the latest 5 products by Created On." },
+            CancellationToken.None);
+
+        Assert.Equal(2, harness.Semantic.CallCount);
+        Assert.Equal("Show the latest 5 products by Created On.", harness.Semantic.LastQuestion);
+        Assert.Equal(2, harness.Recorder.CallCount);
+        // Each independent /api/chat request sends exactly one user message (no Groq chat history).
+        Assert.Equal(1, harness.Recorder.LastOutboundUserMessageCount);
     }
 
     [Fact]
@@ -137,7 +230,9 @@ public sealed class SemanticChatPipelineUnitTests
         Assert.Contains("poc-semantic-selected-metadata", built.FormattedBlock, StringComparison.Ordinal);
     }
 
-    private static async Task<Harness> CreateHarnessAsync(string? semanticError)
+    private static async Task<Harness> CreateHarnessAsync(
+        string? semanticError,
+        RecordingChatClient.Mode aiMode = RecordingChatClient.Mode.PlainText)
     {
         var crmOptions = new CrmOptions
         {
@@ -157,7 +252,7 @@ public sealed class SemanticChatPipelineUnitTests
         var services = new ServiceCollection();
         services.AddLogging(b => b.SetMinimumLevel(LogLevel.Warning));
         services.AddSingleton(opts);
-        services.AddSingleton(Options.Create(new AiOptions { Provider = "Groq", ProviderTimeoutSeconds = 30 }));
+        services.AddSingleton(Options.Create(new AiOptions { Provider = "Groq", ProviderTimeoutSeconds = 60 }));
         services.AddSingleton(policy);
         services.AddSingleton(registry);
         services.AddSingleton<ICrmMetadataService>(metadata);
@@ -167,7 +262,9 @@ public sealed class SemanticChatPipelineUnitTests
         services.AddSingleton<ICrmAuthorizationService, CrmAuthorizationService>();
         services.AddSingleton<IGenericCrmQueryBuilder, GenericCrmQueryBuilder>();
         services.AddSingleton<FetchXmlAggregateBuilder>();
-        services.AddSingleton<IGenericCrmRepository, MockGenericCrmRepository>();
+        services.AddSingleton<MockGenericCrmRepository>();
+        services.AddSingleton<TrackingGenericCrmRepository>();
+        services.AddSingleton<IGenericCrmRepository>(sp => sp.GetRequiredService<TrackingGenericCrmRepository>());
         services.AddHttpClient(DynamicsCrmHttp.HttpClientName);
         services.AddSingleton<DynamicsCrmHttp>();
         services.AddSingleton<DynamicsConnectivityService>();
@@ -176,19 +273,21 @@ public sealed class SemanticChatPipelineUnitTests
         var semantic = new ScriptedSemanticRetriever(semanticError, registry);
         services.AddSingleton<ISemanticCrmMetadataRetriever>(semantic);
 
-        var recorder = new RecordingChatClient();
+        var recorder = new RecordingChatClient { ResponseMode = aiMode };
         services.AddSingleton<IChatClient>(recorder);
         services.AddScoped<ChatService>();
 
         var provider = services.BuildServiceProvider();
         var scope = provider.CreateScope();
+        await Task.CompletedTask;
         return new Harness(
             provider,
             scope,
             scope.ServiceProvider.GetRequiredService<ChatService>(),
             recorder,
             semantic,
-            metadata);
+            metadata,
+            scope.ServiceProvider.GetRequiredService<TrackingGenericCrmRepository>());
     }
 
     private static SemanticHit HitAttr(string entity, string attr, float score) =>
@@ -237,6 +336,16 @@ public sealed class SemanticChatPipelineUnitTests
                     LogicalName = "createdon",
                     ODataPropertyName = "createdon",
                     DisplayName = "Created On",
+                    Kind = CrmAttributeKind.DateTime,
+                    IsValidForRead = true,
+                    IsSortable = true,
+                    IsFilterable = true
+                },
+                new()
+                {
+                    LogicalName = "modifiedon",
+                    ODataPropertyName = "modifiedon",
+                    DisplayName = "Modified On",
                     Kind = CrmAttributeKind.DateTime,
                     IsValidForRead = true,
                     IsSortable = true,
@@ -304,26 +413,6 @@ public sealed class SemanticChatPipelineUnitTests
             ]
         };
 
-    private sealed class Harness(
-        ServiceProvider root,
-        IServiceScope scope,
-        ChatService chat,
-        RecordingChatClient recorder,
-        ScriptedSemanticRetriever semantic,
-        ICrmMetadataService metadata) : IAsyncDisposable
-    {
-        public ChatService Chat { get; } = chat;
-        public RecordingChatClient Recorder { get; } = recorder;
-        public ScriptedSemanticRetriever Semantic { get; } = semantic;
-        public ICrmMetadataService Metadata { get; } = metadata;
-
-        public async ValueTask DisposeAsync()
-        {
-            scope.Dispose();
-            await root.DisposeAsync();
-        }
-    }
-
     private sealed class ScriptedSemanticRetriever : ISemanticCrmMetadataRetriever
     {
         private readonly string? _error;
@@ -380,21 +469,76 @@ public sealed class SemanticChatPipelineUnitTests
                 AttributeHits =
                 [
                     HitAttr("product", "createdon", 0.85f),
+                    HitAttr("product", "modifiedon", 0.84f),
                     HitAttr("product", "name", 0.8f),
                     HitAttr("product", "productid", 0.8f)
                 ],
                 RelationshipHits = []
             });
         }
+
+        public void Reset()
+        {
+            CallCount = 0;
+            LastQuestion = null;
+        }
+    }
+
+    private sealed class TrackingGenericCrmRepository(MockGenericCrmRepository inner) : IGenericCrmRepository
+    {
+        public int QueryCount { get; private set; }
+        public string ProviderName => inner.ProviderName;
+
+        public void Reset() => QueryCount = 0;
+
+        public Task<GenericCrmQueryResult> QueryAsync(
+            CrmQueryPlan plan,
+            CancellationToken cancellationToken = default)
+        {
+            QueryCount++;
+            return inner.QueryAsync(plan, cancellationToken);
+        }
+    }
+
+    private sealed class Harness(
+        ServiceProvider root,
+        IServiceScope scope,
+        ChatService chat,
+        RecordingChatClient recorder,
+        ScriptedSemanticRetriever semantic,
+        ICrmMetadataService metadata,
+        TrackingGenericCrmRepository crm) : IAsyncDisposable
+    {
+        public ChatService Chat { get; } = chat;
+        public RecordingChatClient Recorder { get; } = recorder;
+        public ScriptedSemanticRetriever Semantic { get; } = semantic;
+        public ICrmMetadataService Metadata { get; } = metadata;
+        public TrackingGenericCrmRepository Crm { get; } = crm;
+
+        public async ValueTask DisposeAsync()
+        {
+            scope.Dispose();
+            await root.DisposeAsync();
+        }
     }
 
     private sealed class RecordingChatClient : IChatClient
     {
+        public enum Mode
+        {
+            PlainText,
+            Clarification,
+            MalformedClarification,
+            UnauthorizedAttributeClarification
+        }
+
+        public Mode ResponseMode { get; set; } = Mode.PlainText;
         public int CallCount { get; private set; }
         public string? LastUserMessage { get; private set; }
         public bool LastRequestHadCatalog { get; private set; }
         public bool LastRequestHadQueryCrmTool { get; private set; }
         public string? LastCatalogText { get; private set; }
+        public int LastOutboundUserMessageCount { get; private set; }
 
         public void Reset()
         {
@@ -403,6 +547,7 @@ public sealed class SemanticChatPipelineUnitTests
             LastRequestHadCatalog = false;
             LastRequestHadQueryCrmTool = false;
             LastCatalogText = null;
+            LastOutboundUserMessageCount = 0;
         }
 
         public Task<ChatResponse> GetResponseAsync(
@@ -413,15 +558,31 @@ public sealed class SemanticChatPipelineUnitTests
             var messages = chatMessages.ToList();
             CallCount++;
             LastUserMessage = messages.LastOrDefault(m => m.Role == ChatRole.User)?.Text;
+            LastOutboundUserMessageCount = messages.Count(m => m.Role == ChatRole.User);
             LastCatalogText = messages.FirstOrDefault(m =>
                 m.Text?.Contains(CrmAiMetadataCatalogService.BeginMarker, StringComparison.Ordinal) == true)?.Text;
             LastRequestHadCatalog = LastCatalogText is not null;
-            LastRequestHadQueryCrmTool = options?.Tools?.Any(t =>
-                t is AIFunction f && f.Name.Contains("query_crm", StringComparison.OrdinalIgnoreCase)) == true
-                || options?.Tools?.Count > 0;
+            LastRequestHadQueryCrmTool = options?.Tools?.Count > 0;
+            Assert.Equal(ChatToolMode.Auto, options?.ToolMode);
 
-            // Return a plain assistant message so this unit test stops after verifying the outbound catalog.
-            var message = new ChatMessage(ChatRole.Assistant, "Query planned from semantic catalog.");
+            var text = ResponseMode switch
+            {
+                Mode.Clarification =>
+                    """
+                    {"type":"clarification","message":"Which of these queries would you like to run?","suggestions":[{"label":"By Created On","question":"Show the latest 5 products by Created On.","entityLogicalName":"product","attributeLogicalNames":["createdon"]},{"label":"By Modified On","question":"Show the latest 5 products by Modified On.","entityLogicalName":"product","attributeLogicalNames":["modifiedon"]}]}
+                    """,
+                Mode.MalformedClarification =>
+                    """
+                    {"type":"clarification","message":"Pick one","suggestions":[{"label":"Bad","question":"Created On","entityLogicalName":"product","attributeLogicalNames":["createdon"]}]}
+                    """,
+                Mode.UnauthorizedAttributeClarification =>
+                    """
+                    {"type":"clarification","message":"Which of these queries would you like to run?","suggestions":[{"label":"Fake","question":"Show the latest 5 products by Secret Field.","entityLogicalName":"product","attributeLogicalNames":["secret_field"]},{"label":"By Created On","question":"Show the latest 5 products by Created On.","entityLogicalName":"product","attributeLogicalNames":["createdon"]}]}
+                    """,
+                _ => "Query planned from semantic catalog."
+            };
+
+            var message = new ChatMessage(ChatRole.Assistant, text);
             return Task.FromResult(new ChatResponse([message]));
         }
 

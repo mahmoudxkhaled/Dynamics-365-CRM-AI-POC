@@ -1,9 +1,17 @@
 import { CrmStructuredData } from './crm-table.model';
 
+export interface ClarificationSuggestion {
+  label: string;
+  question: string;
+}
+
 export interface ChatResponse {
   conversationId: string;
   reply: string;
   providerHint?: string | null;
+  /** "answer" | "clarification"; omitted/null treated as answer. */
+  responseType?: string | null;
+  suggestions?: ClarificationSuggestion[] | null;
   privacySafeToolExecution: boolean;
   selectedTool?: string | null;
   structuredData?: CrmStructuredData | null;
@@ -28,5 +36,7 @@ export interface ChatUiMessage {
   /** Full reply used when rendering structured assistant results. */
   reply?: string;
   structuredData?: CrmStructuredData | null;
+  responseType?: string | null;
+  suggestions?: ClarificationSuggestion[] | null;
   error?: boolean;
 }

@@ -11,8 +11,9 @@ public sealed class AiOptions
     public string Provider { get; set; } = "Groq";
 
     /// <summary>
-    /// Max seconds to wait for the AI provider tool-call response.
-    /// On timeout, chat falls back to deterministic entity resolution when possible.
+    /// Max seconds to wait for a single AI provider planning response.
+    /// Client-side timeouts do not automatically retry another full wait.
+    /// Bound in ChatService to 8–90 seconds.
     /// </summary>
-    public int ProviderTimeoutSeconds { get; set; } = 25;
+    public int ProviderTimeoutSeconds { get; set; } = 60;
 }

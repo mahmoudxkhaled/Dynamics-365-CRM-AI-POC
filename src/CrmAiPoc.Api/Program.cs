@@ -4,18 +4,12 @@ using CrmAiPoc.Api.Crm.Dynamics;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
 using CrmAiPoc.Api.Crm.Validation;
-using CrmAiPoc.Api.Diagnostics;
 using CrmAiPoc.Api.Endpoints;
 using CrmAiPoc.Api.Security;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
-
-builder.Services.Configure<AiDiagnosticsOptions>(
-    builder.Configuration.GetSection(AiDiagnosticsOptions.SectionName));
-builder.Services.AddSingleton<PipelineDiagnostics>();
-builder.Services.AddTransient<DynamicsCrmDiagnosticsHandler>();
 
 builder.Services.Configure<AiOptions>(options =>
 {
@@ -109,7 +103,7 @@ builder.Services.AddSingleton<FetchXmlAggregateBuilder>();
 builder.Services.AddScoped<CrmAiTools>();
 builder.Services.AddScoped<ChatService>();
 
-// Dynamics HTTP + diagnostics are always registered so connectivity can be tested
+// Dynamics HTTP is always registered so connectivity can be tested
 // without permanently switching Crm:Provider (calls still require EnableLiveIntegration + BaseUrl).
 builder.Services.AddHttpClient(DynamicsCrmHttp.HttpClientName, (sp, client) =>
     {
@@ -121,7 +115,6 @@ builder.Services.AddHttpClient(DynamicsCrmHttp.HttpClientName, (sp, client) =>
 
         client.Timeout = TimeSpan.FromSeconds(60);
     })
-    .AddHttpMessageHandler<DynamicsCrmDiagnosticsHandler>()
     .ConfigurePrimaryHttpMessageHandler(sp =>
     {
         var opts = sp.GetRequiredService<IOptions<CrmOptions>>().Value;
@@ -130,7 +123,6 @@ builder.Services.AddHttpClient(DynamicsCrmHttp.HttpClientName, (sp, client) =>
 
 builder.Services.AddSingleton<DynamicsCrmHttp>();
 builder.Services.AddSingleton<DynamicsConnectivityService>();
-builder.Services.AddSingleton<DynamicsSchemaDiscoveryService>();
 
 var crmOptions = builder.Configuration.GetSection(CrmOptions.SectionName).Get<CrmOptions>() ?? new CrmOptions();
 var crmProviderName = (crmOptions.Provider ?? "Mock").Trim();
@@ -219,7 +211,6 @@ app.UseCors();
 app.UseMiddleware<LoopbackOnlyMiddleware>();
 
 app.MapChatEndpoints();
-app.MapCrmDiagnosticsEndpoints();
 
 app.Run();
 

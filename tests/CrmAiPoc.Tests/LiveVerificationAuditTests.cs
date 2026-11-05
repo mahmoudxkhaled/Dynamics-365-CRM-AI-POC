@@ -6,7 +6,6 @@ using CrmAiPoc.Api.Crm.Dynamics;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
 using CrmAiPoc.Api.Crm.Query;
-using CrmAiPoc.Api.Diagnostics;
 using CrmAiPoc.Api.Security;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -64,7 +63,6 @@ public sealed class LiveVerificationAuditTests
         var services = new ServiceCollection();
         services.AddLogging(b => b.AddDebug());
         services.AddSingleton(Options.Create(crmOptions));
-        services.AddPipelineDiagnosticsForTests(enabled: false);
         services.AddSingleton<EntityApprovalPolicy>();
         services.AddSingleton<CrmMetadataRegistry>();
         services.AddHttpClient(DynamicsCrmHttp.HttpClientName, client =>
@@ -72,9 +70,7 @@ public sealed class LiveVerificationAuditTests
                 client.BaseAddress = new Uri(baseUrl.EndsWith('/') ? baseUrl : baseUrl + "/");
                 client.Timeout = TimeSpan.FromSeconds(90);
             })
-            .AddHttpMessageHandler<DynamicsCrmDiagnosticsHandler>()
             .ConfigurePrimaryHttpMessageHandler(() => DynamicsCrmHttp.CreateHandler(crmOptions));
-        services.AddTransient<DynamicsCrmDiagnosticsHandler>();
         services.AddSingleton<DynamicsCrmHttp>();
         services.AddSingleton<DynamicsConnectivityService>();
         services.AddSingleton<ICrmMetadataService, DynamicsCrmMetadataService>();

@@ -97,7 +97,6 @@ public sealed class LiveAggregateStatusDebugTests
         var services = new ServiceCollection();
         services.AddLogging(b => b.AddDebug());
         services.AddSingleton(options);
-        services.AddPipelineDiagnosticsForTests(enabled: false);
         services.AddSingleton<EntityApprovalPolicy>();
         services.AddSingleton<CrmMetadataRegistry>();
         services.AddHttpClient(DynamicsCrmHttp.HttpClientName, client =>

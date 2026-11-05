@@ -1,8 +1,6 @@
-using System.Diagnostics;
 using System.Text.Json;
 using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Dynamics;
-using CrmAiPoc.Api.Diagnostics;
 using Microsoft.Extensions.Options;
 
 namespace CrmAiPoc.Api.Crm.Metadata;
@@ -17,7 +15,6 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
     private readonly CrmMetadataRegistry _registry;
     private readonly EntityApprovalPolicy _policy;
     private readonly CrmOptions _options;
-    private readonly PipelineDiagnostics _diagnostics;
     private readonly ILogger<DynamicsCrmMetadataService> _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private DateTimeOffset _lastFullLoadUtc = DateTimeOffset.MinValue;
@@ -29,14 +26,12 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
         CrmMetadataRegistry registry,
         EntityApprovalPolicy policy,
         IOptions<CrmOptions> options,
-        PipelineDiagnostics diagnostics,
         ILogger<DynamicsCrmMetadataService> logger)
     {
         _http = http;
         _registry = registry;
         _policy = policy;
         _options = options.Value;
-        _diagnostics = diagnostics;
         _logger = logger;
     }
 
@@ -53,13 +48,6 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
 
         if (fresh)
         {
-            _diagnostics.LogMetadata(sb =>
-            {
-                sb.AppendLine("MetadataDiscovery: cache HIT (fresh within TTL)");
-                sb.AppendLine($"CacheTtlSeconds: {Math.Max(60, _options.MetadataCacheSeconds)}");
-                sb.AppendLine($"LastFullLoadUtc: {_lastFullLoadUtc:u}");
-                sb.AppendLine($"Source: Live CRM cache");
-            });
             return;
         }
 
@@ -141,12 +129,7 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
             }
             catch (Exception ex)
             {
-                _diagnostics.LogMetadata(sb =>
-                {
-                    sb.AppendLine("MetadataDiscovery: FAILED (live not configured)");
-                    sb.AppendLine($"Message: {_diagnostics.RedactText(ex.Message)}");
-                    sb.AppendLine("Source: Seed / prior cache");
-                });
+                _logger.LogWarning(ex, "Metadata discovery skipped because live CRM is not configured.");
                 _liveDiscoveryCompleted = true;
                 _lastFullLoadUtc = DateTimeOffset.UtcNow;
                 return;
@@ -156,14 +139,6 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
                 ? _policy.ApprovedLogicalNames.ToArray()
                 : [_policy.IsApproved(logicalName) ? logicalName.Trim() : logicalName.Trim()];
 
-            _diagnostics.LogMetadata(sb =>
-            {
-                sb.AppendLine("MetadataDiscovery: cache MISS / refresh starting");
-                sb.AppendLine($"Targets: [{string.Join(", ", targets)}]");
-                sb.AppendLine("Source: Live CRM EntityDefinitions");
-            });
-
-            var refreshSw = Stopwatch.StartNew();
             foreach (var name in targets)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -194,20 +169,11 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
                 }
             }
 
-            refreshSw.Stop();
             if (string.IsNullOrWhiteSpace(logicalName))
             {
                 _liveDiscoveryCompleted = true;
                 _lastFullLoadUtc = DateTimeOffset.UtcNow;
             }
-
-            _diagnostics.LogMetadata(sb =>
-            {
-                sb.AppendLine("MetadataDiscovery: refresh completed");
-                sb.AppendLine($"DurationMs: {DiagnosticsTiming.ElapsedMs(refreshSw)}");
-                sb.AppendLine($"LiveDiscoveryCompleted: {_liveDiscoveryCompleted}");
-                sb.AppendLine($"ApprovedInRegistry: {_registry.GetApproved().Count}");
-            });
         }
         finally
         {

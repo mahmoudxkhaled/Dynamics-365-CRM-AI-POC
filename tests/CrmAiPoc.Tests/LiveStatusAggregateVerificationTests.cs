@@ -58,7 +58,6 @@ public sealed class LiveStatusAggregateVerificationTests
         var services = new ServiceCollection();
         services.AddLogging(b => b.AddDebug());
         services.AddSingleton(Options.Create(crmOptions));
-        services.AddPipelineDiagnosticsForTests(enabled: false);
         services.AddSingleton<EntityApprovalPolicy>();
         services.AddSingleton<CrmMetadataRegistry>();
         services.AddHttpClient(DynamicsCrmHttp.HttpClientName, client =>

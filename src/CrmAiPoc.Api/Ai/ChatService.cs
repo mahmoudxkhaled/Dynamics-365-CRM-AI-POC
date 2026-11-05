@@ -1,11 +1,8 @@
-using System.Diagnostics;
 using System.Globalization;
-using System.Text;
 using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Dynamics;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
-using CrmAiPoc.Api.Diagnostics;
 using CrmAiPoc.Api.Models;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
@@ -71,10 +68,6 @@ public sealed partial class ChatService
     private readonly CrmRelationshipLabeler _relationshipLabeler;
     private readonly CrmOptions _crmOptions;
     private readonly AiOptions _aiOptions;
-    private readonly GroqOptions _groqOptions;
-    private readonly GeminiOptions _geminiOptions;
-    private readonly OpenAiOptions _openAiOptions;
-    private readonly PipelineDiagnostics _diagnostics;
     private readonly ILogger<ChatService> _logger;
 
     public ChatService(
@@ -89,10 +82,6 @@ public sealed partial class ChatService
         CrmRelationshipLabeler relationshipLabeler,
         IOptions<CrmOptions> crmOptions,
         IOptions<AiOptions> aiOptions,
-        IOptions<GroqOptions> groqOptions,
-        IOptions<GeminiOptions> geminiOptions,
-        IOptions<OpenAiOptions> openAiOptions,
-        PipelineDiagnostics diagnostics,
         ILogger<ChatService> logger)
     {
         _chatClient = chatClient;
@@ -106,16 +95,11 @@ public sealed partial class ChatService
         _relationshipLabeler = relationshipLabeler;
         _crmOptions = crmOptions.Value;
         _aiOptions = aiOptions.Value;
-        _groqOptions = groqOptions.Value;
-        _geminiOptions = geminiOptions.Value;
-        _openAiOptions = openAiOptions.Value;
-        _diagnostics = diagnostics;
         _logger = logger;
     }
 
     public async Task<ChatResponseDto> ChatAsync(ChatRequestDto request, CancellationToken cancellationToken)
     {
-        using var _ = DiagnosticsCorrelation.Begin();
         var session = _conversations.GetOrCreate(request.ConversationId);
         session.Touch();
         return await ChatCoreAsync(request, session, cancellationToken);
@@ -177,9 +161,7 @@ public sealed partial class ChatService
 
         var userMessage = request.Message.Trim();
         _logger.LogDebug("Building approved metadata catalog for outbound AI context…");
-        var catalogSw = Stopwatch.StartNew();
         var catalog = await _metadataCatalog.BuildApprovedCatalogAsync(userMessage, cancellationToken);
-        catalogSw.Stop();
         _logger.LogDebug(
             "Catalog ready: enabled={Enabled}, success={Success}, chars={Chars}",
             catalog.Enabled,
@@ -187,8 +169,6 @@ public sealed partial class ChatService
             catalog.CharacterCount);
 
         var approvedEntities = await _metadata.GetApprovedEntitiesAsync(cancellationToken);
-        LogCrmMetadataCatalogSection(catalog, catalogSw);
-        LogCrmMetadataSection(approvedEntities, catalog, catalogSw);
 
         // Preflight: never call Groq without a usable approved catalog when cataloging is enabled.
         if (catalog.Enabled && !catalog.Success)
@@ -232,15 +212,10 @@ public sealed partial class ChatService
             Temperature = 0.1f
         };
 
-        LogAiRequestSection(outboundHistory, chatOptions, catalog, userMessage);
-
         ChatResponse modelResponse;
-        var aiSw = Stopwatch.StartNew();
         try
         {
             modelResponse = await GetResponseWithRetryAsync(outboundHistory, chatOptions, cancellationToken);
-            aiSw.Stop();
-            LogAiResponseSection(modelResponse, aiSw, httpStatus: 200);
         }
         catch (Exception ex) when (ex is OperationCanceledException or TimeoutException or HttpRequestException
                                    || ex.GetType().Name.Contains("ClientResult", StringComparison.Ordinal)
@@ -248,16 +223,7 @@ public sealed partial class ChatService
                                    || ex.Message.Contains("canceled", StringComparison.OrdinalIgnoreCase)
                                    || ex.Message.Contains("cancelled", StringComparison.OrdinalIgnoreCase))
         {
-            aiSw.Stop();
             _logger.LogWarning(ex, "AI provider timed out or failed; not fabricating a CRM query.");
-            _diagnostics.LogAiError(sb =>
-            {
-                sb.AppendLine($"Provider: {_aiOptions.Provider}");
-                sb.AppendLine($"DurationMs: {DiagnosticsTiming.ElapsedMs(aiSw)}");
-                sb.AppendLine($"ExceptionType: {ex.GetType().Name}");
-                sb.AppendLine($"Message: {_diagnostics.RedactText(ex.Message)}");
-                sb.AppendLine("Outcome: no fabricated CRM query");
-            });
             return CreateResponse(
                 session,
                 "The AI planner did not respond in time. Please retry your question.",
@@ -272,11 +238,6 @@ public sealed partial class ChatService
         {
             // Model may be clarifying or refusing — surface that text. Never invent a query_crm call.
             var text = LocalCrmReplyFormatter.FormatRefusalOrText(modelResponse.Text, "en");
-            _diagnostics.LogQueryPlan(sb =>
-            {
-                sb.AppendLine("Outcome: no tool call");
-                sb.AppendLine($"ModelText: {_diagnostics.RedactText(modelResponse.Text)}");
-            });
             return CreateResponse(session, text, outboundWasSafe: audit.SafeForLiveCrm);
         }
 
@@ -300,183 +261,6 @@ public sealed partial class ChatService
             outboundWasSafe: audit.SafeForLiveCrm);
     }
 
-    private void LogCrmMetadataCatalogSection(
-        CrmAiMetadataCatalogBuildResult catalog,
-        Stopwatch catalogSw)
-    {
-        _diagnostics.LogMetadata(sb =>
-        {
-            sb.AppendLine("[CRM METADATA CATALOG]");
-            sb.AppendLine($"Source: {catalog.Source}");
-            sb.AppendLine($"ApprovedEntityCount: {catalog.ApprovedEntityCount}");
-            sb.AppendLine($"IncludedEntityCount: {catalog.IncludedEntityCount}");
-            sb.AppendLine($"IncludedAttributeCount: {catalog.IncludedAttributeCount}");
-            sb.AppendLine($"IncludedRelationshipCount: {catalog.IncludedRelationshipCount}");
-            sb.AppendLine($"OriginalCharacterCount: {catalog.OriginalCharacterCount}");
-            sb.AppendLine($"FinalCharacterCount: {catalog.FinalCharacterCount}");
-            sb.AppendLine($"ConfiguredBudget: {catalog.ConfiguredBudget}");
-            sb.AppendLine($"TruncationApplied: {catalog.TruncationApplied}");
-            sb.AppendLine($"Success: {catalog.Success}");
-            sb.AppendLine($"Enabled: {catalog.Enabled}");
-            sb.AppendLine($"BuildDurationMs: {DiagnosticsTiming.ElapsedMs(catalogSw)}");
-            if (!string.IsNullOrWhiteSpace(catalog.Error))
-            {
-                sb.AppendLine($"Error: {catalog.Error}");
-            }
-        });
-    }
-
-    private void LogCrmMetadataSection(
-        IReadOnlyList<CrmEntityMetadata> approvedEntities,
-        CrmAiMetadataCatalogBuildResult catalog,
-        Stopwatch catalogSw)
-    {
-        _diagnostics.LogMetadata(sb =>
-        {
-            sb.AppendLine("=== Backend approved metadata (discovered / cached) ===");
-            sb.AppendLine($"Provider: {_crmOptions.Provider}");
-            sb.AppendLine($"AllowSendApprovedMetadataCatalogToAi: {_crmOptions.AllowSendApprovedMetadataCatalogToAi}");
-            sb.AppendLine($"CatalogBuildDurationMs: {DiagnosticsTiming.ElapsedMs(catalogSw)}");
-            sb.AppendLine($"ApprovedEntityCount: {approvedEntities.Count}");
-            foreach (var entity in approvedEntities.OrderBy(e => e.LogicalName))
-            {
-                sb.AppendLine(
-                    $"- Entity LogicalName={entity.LogicalName} DisplayName={entity.DisplayName} EntitySetName={entity.EntitySetName} Provenance={entity.Provenance}");
-                sb.AppendLine(
-                    $"  Attributes ({entity.Attributes.Count}): " +
-                    string.Join(", ", entity.Attributes.Take(40).Select(a =>
-                        $"{a.LogicalName}:{a.Kind}:{a.DisplayName ?? "-"}")));
-                if (entity.Attributes.Count > 40)
-                {
-                    sb.AppendLine($"  ... +{entity.Attributes.Count - 40} more attributes");
-                }
-
-                var rels = entity.Relationships.Where(r => r.IsApproved).ToList();
-                sb.AppendLine($"  ApprovedRelationships ({rels.Count}):");
-                foreach (var r in rels.Take(30))
-                {
-                    sb.AppendLine(
-                        $"    {r.SchemaName} {r.Kind} {r.ReferencingEntity}.{r.ReferencingAttribute} -> {r.ReferencedEntity}.{r.ReferencedAttribute}");
-                }
-            }
-
-            sb.AppendLine();
-            sb.AppendLine("=== Metadata catalog included in outbound AI request ===");
-            sb.AppendLine($"Enabled: {catalog.Enabled} Success: {catalog.Success}");
-            sb.AppendLine(
-                $"Index={catalog.IncludedEntityCount} Detail={catalog.EntityCount} " +
-                $"Attrs={catalog.IncludedAttributeCount} Rels={catalog.IncludedRelationshipCount} " +
-                $"Chars={catalog.CharacterCount}/{catalog.ConfiguredBudget}");
-            if (!string.IsNullOrWhiteSpace(catalog.Error))
-            {
-                sb.AppendLine($"Error: {catalog.Error}");
-            }
-
-            if (!string.IsNullOrWhiteSpace(catalog.FormattedBlock))
-            {
-                sb.AppendLine("FormattedBlock:");
-                sb.AppendLine(catalog.FormattedBlock);
-            }
-            else
-            {
-                sb.AppendLine("FormattedBlock: (omitted / empty)");
-            }
-        });
-    }
-
-    private void LogAiRequestSection(
-        IReadOnlyList<ChatMessage> outboundHistory,
-        ChatOptions chatOptions,
-        CrmAiMetadataCatalogBuildResult catalog,
-        string userMessage)
-    {
-        _diagnostics.LogAiRequest(sb =>
-        {
-            sb.AppendLine($"Provider: {_aiOptions.Provider}");
-            sb.AppendLine($"Model: {ResolveModelName()}");
-            sb.AppendLine($"ToolChoice: {(chatOptions.ToolMode?.ToString() ?? "auto / framework default")}");
-            sb.AppendLine($"Temperature: {chatOptions.Temperature}");
-            sb.AppendLine($"ProviderTimeoutSeconds: {_aiOptions.ProviderTimeoutSeconds}");
-            sb.AppendLine($"LatestUserQuestion: {_diagnostics.SanitizeUserQuestion(userMessage)}");
-            sb.AppendLine();
-            sb.AppendLine("SystemPrompt:");
-            sb.AppendLine(SystemPrompt);
-            sb.AppendLine();
-            sb.AppendLine("Messages (actual outbound order):");
-            sb.AppendLine(AiDiagnosticsFormatter.FormatMessages(outboundHistory, _diagnostics, includeCatalogFullText: false));
-            sb.AppendLine();
-            sb.AppendLine("MetadataCatalogSentToAi:");
-            sb.AppendLine(string.IsNullOrWhiteSpace(catalog.FormattedBlock)
-                ? "(none)"
-                : catalog.FormattedBlock);
-            sb.AppendLine();
-            sb.AppendLine("ToolDefinitions / query_crm JSON Schema:");
-            sb.AppendLine(AiDiagnosticsFormatter.FormatToolDefinitions(chatOptions.Tools ?? []));
-            sb.AppendLine();
-            sb.AppendLine(
-                "Note: This is the MEAI request boundary (messages + tools + options) immediately before IChatClient.GetResponseAsync. API keys are never logged.");
-        });
-    }
-
-    private void LogAiResponseSection(ChatResponse modelResponse, Stopwatch aiSw, int httpStatus)
-    {
-        _diagnostics.LogAiResponse(sb =>
-        {
-            sb.AppendLine($"Provider: {_aiOptions.Provider}");
-            sb.AppendLine($"Model: {modelResponse.ModelId ?? ResolveModelName()}");
-            sb.AppendLine($"HttpStatus: {httpStatus} (MEAI success path; raw transport status may differ inside SDK)");
-            sb.AppendLine($"DurationMs: {DiagnosticsTiming.ElapsedMs(aiSw)}");
-            sb.AppendLine($"FinishReason: {modelResponse.FinishReason}");
-            if (modelResponse.Usage is not null)
-            {
-                sb.AppendLine(
-                    $"TokenUsage: input={modelResponse.Usage.InputTokenCount} output={modelResponse.Usage.OutputTokenCount} total={modelResponse.Usage.TotalTokenCount}");
-            }
-
-            var calls = modelResponse.Messages.SelectMany(m => m.Contents.OfType<FunctionCallContent>()).ToList();
-            sb.AppendLine($"ToolCallCount: {calls.Count}");
-            foreach (var call in calls)
-            {
-                sb.AppendLine($"ToolName: {call.Name}");
-                sb.AppendLine($"OriginalToolArgumentsJson: {AiDiagnosticsFormatter.FormatToolArguments(call.Arguments)}");
-            }
-
-            sb.AppendLine();
-            sb.AppendLine("RawResponseJson (MEAI ChatResponse before plan parsing):");
-            if (_diagnostics.AllowSensitivePayloads)
-            {
-                sb.AppendLine(AiDiagnosticsFormatter.FormatChatResponse(modelResponse, _diagnostics));
-            }
-            else
-            {
-                sb.AppendLine(
-                    "(redacted — enable AiDiagnostics:AllowSensitivePayloadLogging=true in Development for full payload)");
-                sb.AppendLine($"ModelTextLength: {modelResponse.Text?.Length ?? 0}");
-                foreach (var call in calls)
-                {
-                    sb.AppendLine(
-                        $"ToolCall: {call.Name} argsKeys=[{string.Join(',', call.Arguments?.Keys ?? Array.Empty<string>())}]");
-                }
-            }
-        });
-    }
-
-    private string ResolveModelName()
-    {
-        var provider = (_aiOptions.Provider ?? "Groq").Trim();
-        if (provider.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
-        {
-            return _openAiOptions.ModelName;
-        }
-
-        if (provider.Equals("Gemini", StringComparison.OrdinalIgnoreCase))
-        {
-            return _geminiOptions.ModelName;
-        }
-
-        return _groqOptions.ModelName;
-    }
-
     private async Task<ChatResponseDto> HandleQueryCrmAsync(
         ConversationSession session,
         FunctionCallContent call,
@@ -484,18 +268,10 @@ public sealed partial class ChatService
         bool outboundWasSafe,
         CancellationToken cancellationToken)
     {
-        var originalArgsJson = AiDiagnosticsFormatter.FormatToolArguments(call.Arguments);
         var parsed = CrmQueryPlanParser.ParseFromToolArguments(call.Arguments);
         if (!parsed.Success || parsed.Plan is null)
         {
             var msg = parsed.Error ?? "Invalid query_crm arguments.";
-            _diagnostics.LogQueryPlan(sb =>
-            {
-                sb.AppendLine("Stage: parse failed");
-                sb.AppendLine($"OriginalAiToolArguments: {originalArgsJson}");
-                sb.AppendLine($"ParseError: {msg}");
-                sb.AppendLine("SemanticInterpretation: none (AI arguments rejected as invalid)");
-            });
             return CreateResponse(session, msg, selectedTool: "query_crm", outboundWasSafe: outboundWasSafe);
         }
 
@@ -504,14 +280,6 @@ public sealed partial class ChatService
         // Validate AI-selected entity against approval policy — do not substitute another entity.
         if (!TryCanonicalizeApprovedEntity(parsed.Plan.Entity, out var canonicalEntity, out var entityError))
         {
-            _diagnostics.LogQueryPlan(sb =>
-            {
-                sb.AppendLine("Stage: entity approval failed");
-                sb.AppendLine($"OriginalAiToolArguments: {originalArgsJson}");
-                sb.AppendLine($"ProposedEntity: {parsed.Plan.Entity}");
-                sb.AppendLine($"Error: {entityError}");
-                sb.AppendLine("TechnicalNormalization: none (entity not approved; no substitution)");
-            });
             return CreateResponse(
                 session,
                 entityError ?? "Entity is not approved for AI CRM queries.",
@@ -519,7 +287,6 @@ public sealed partial class ChatService
                 outboundWasSafe: outboundWasSafe);
         }
 
-        var entityNormalized = !canonicalEntity.Equals(parsed.Plan.Entity, StringComparison.Ordinal);
         var plan = ClonePlan(parsed.Plan, canonicalEntity);
 
         // Resolve technical relationship SchemaNames on AI-proposed links only — never invent links from keywords.
@@ -532,13 +299,6 @@ public sealed partial class ChatService
         if (attach.Pending is not null)
         {
             session.SetPendingRelationship(attach.Pending);
-            _diagnostics.LogQueryPlan(sb =>
-            {
-                sb.AppendLine("Stage: relationship clarification required");
-                sb.AppendLine($"OriginalAiToolArguments: {originalArgsJson}");
-                AppendPlanSnapshot(sb, plan, entityNormalized, canonicalEntity, parsed.Plan.Entity);
-                sb.AppendLine("TechnicalNormalization: pending user relationship selection (no semantic rewrite)");
-            });
             return CreateResponse(
                 session,
                 attach.ClarificationMessage ?? "Please choose a relationship option.",
@@ -559,12 +319,6 @@ public sealed partial class ChatService
 
         if (!string.IsNullOrWhiteSpace(attach.ClarificationMessage))
         {
-            _diagnostics.LogQueryPlan(sb =>
-            {
-                sb.AppendLine("Stage: relationship attach clarification");
-                sb.AppendLine($"OriginalAiToolArguments: {originalArgsJson}");
-                sb.AppendLine($"Message: {attach.ClarificationMessage}");
-            });
             return CreateResponse(
                 session,
                 attach.ClarificationMessage,
@@ -572,58 +326,8 @@ public sealed partial class ChatService
                 outboundWasSafe: outboundWasSafe);
         }
 
-        _diagnostics.LogQueryPlan(sb =>
-        {
-            sb.AppendLine("Stage: validated plan ready for CRM execution");
-            sb.AppendLine($"OriginalAiToolArguments: {originalArgsJson}");
-            AppendPlanSnapshot(sb, attach.Plan, entityNormalized, canonicalEntity, parsed.Plan.Entity);
-            sb.AppendLine(
-                "TechnicalNormalizations: alias→logicalName for approved entity; relationship SchemaName fill on AI-proposed links only.");
-            sb.AppendLine(
-                "SemanticInterpretation: none — AI remains authoritative for operation/filters/dates/links; backend validates and resolves dates/relationships technically.");
-            sb.AppendLine("FetchXML: logged in [FETCHXML] immediately before CRM execution.");
-        });
-
         return await ExecuteValidatedPlanAsync(
             session, attach.Plan, outboundWasSafe, cancellationToken);
-    }
-
-    private void AppendPlanSnapshot(
-        StringBuilder sb,
-        CrmQueryPlan plan,
-        bool entityNormalized,
-        string canonicalEntity,
-        string originalEntity)
-    {
-        sb.AppendLine($"ResolvedEntity: {plan.Entity}");
-        if (entityNormalized)
-        {
-            sb.AppendLine(
-                $"EntityTechnicalNormalization: '{originalEntity}' → '{canonicalEntity}' (alias/casing only)");
-        }
-        else
-        {
-            sb.AppendLine("EntityTechnicalNormalization: none");
-        }
-
-        sb.AppendLine($"Operation: {plan.Operation}");
-        sb.AppendLine($"Limit: {plan.Limit}");
-        sb.AppendLine($"Select: [{string.Join(", ", plan.Select)}]");
-        sb.AppendLine($"Filters: {_diagnostics.PrettyJsonSerialize(plan.Filters)}");
-        sb.AppendLine($"Sort: {_diagnostics.PrettyJsonSerialize(plan.Sort)}");
-        sb.AppendLine($"Aggregates: {_diagnostics.PrettyJsonSerialize(plan.Aggregates)}");
-        sb.AppendLine($"GroupBy: {_diagnostics.PrettyJsonSerialize(plan.GroupBy)}");
-        sb.AppendLine($"Links: {_diagnostics.PrettyJsonSerialize(plan.Links)}");
-        if (plan.RelativeDate is not null)
-        {
-            sb.AppendLine($"DateField: {plan.RelativeDate.Field}");
-            sb.AppendLine($"DateToken: {plan.RelativeDate.Token}");
-            sb.AppendLine($"DateExpression: {_diagnostics.PrettyJsonSerialize(plan.RelativeDate.Expression ?? plan.RelativeDate.GetExpression())}");
-        }
-        else
-        {
-            sb.AppendLine("DateRange: (none)");
-        }
     }
 
     private bool TryCanonicalizeApprovedEntity(string? proposed, out string canonical, out string? error)

@@ -83,7 +83,7 @@ public sealed class CrmAiMetadataCatalogBuildResult
     public int AttributeCount { get; init; }
     public int CharacterCount { get; init; }
 
-    // Diagnostics
+    // Catalog build metrics
     public string Source { get; init; } = "Unknown";
     public int ApprovedEntityCount { get; init; }
     public int IncludedEntityCount { get; init; }

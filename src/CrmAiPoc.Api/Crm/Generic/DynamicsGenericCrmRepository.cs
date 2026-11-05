@@ -4,7 +4,6 @@ using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Dynamics;
 using CrmAiPoc.Api.Crm.Metadata;
 using CrmAiPoc.Api.Crm.Query;
-using CrmAiPoc.Api.Diagnostics;
 using CrmAiPoc.Api.Security;
 using Microsoft.Extensions.Options;
 
@@ -18,7 +17,6 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
     private readonly IGenericCrmQueryBuilder _builder;
     private readonly FetchXmlAggregateBuilder _aggregateBuilder;
     private readonly ICrmAuthorizationService _auth;
-    private readonly PipelineDiagnostics _diagnostics;
     private readonly TimeZoneInfo _businessTz;
     private readonly ILogger<DynamicsGenericCrmRepository> _logger;
 
@@ -29,7 +27,6 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
         IGenericCrmQueryBuilder builder,
         FetchXmlAggregateBuilder aggregateBuilder,
         ICrmAuthorizationService auth,
-        PipelineDiagnostics diagnostics,
         IOptions<CrmOptions> crmOptions,
         ILogger<DynamicsGenericCrmRepository> logger)
     {
@@ -39,7 +36,6 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
         _builder = builder;
         _aggregateBuilder = aggregateBuilder;
         _auth = auth;
-        _diagnostics = diagnostics;
         _businessTz = BusinessTimeZone.Resolve(crmOptions.Value.BusinessTimeZoneId);
         _logger = logger;
     }
@@ -123,8 +119,6 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
             built.Limit,
             built.FetchXml?.Length ?? 0);
 
-        LogFetchXmlDiagnostic(plan, logical, built.Operation.ToString().ToLowerInvariant(), built.FetchXml, built.AppliedFilterSummary, built.SortSummary);
-
         // Prefer formatted-value annotations when supported (On-Prem may reject Prefer — fallback below).
         var http = await _http.GetAsync(built.RelativeRequestUri, includeAnnotations: true, cancellationToken);
         if (!http.IsSuccess)
@@ -138,7 +132,6 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
         if (!http.IsSuccess)
         {
             var err = DynamicsCrmErrorParser.Parse(http.Body);
-            LogCrmBusinessFailure(built.Operation.ToString(), http.StatusCode, err.Code, err.Message);
             if (built.Operation == CrmQueryOperation.Count && err.IsAggregateQueryRecordLimit)
             {
                 var partitioned = await TryPartitionedCountAsync(
@@ -171,7 +164,6 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
             var countInfo = ReadFetchXmlAggregateCount(http.Body);
             var capped = countInfo.MayBeCapped ||
                          countInfo.Count >= CrmQueryLimits.DynamicsFetchXmlAggregateCountCeiling;
-            LogCrmBusinessSuccess("count", rowCount: 0, count: countInfo.Count);
             return new GenericCrmQueryResult
             {
                 Entity = logical,
@@ -198,7 +190,6 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
 
         var items = LinkResultNormalizer.Normalize(ParseRows(http.Body, entity), built.LinkColumns);
         items = ClientSideResultSorter.Apply(items, plan.ClientSideSort);
-        LogCrmBusinessSuccess("list", rowCount: items.Count, count: null);
         return new GenericCrmQueryResult
         {
             Entity = logical,
@@ -269,24 +260,13 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
             entity.LogicalName,
             built.RelativeRequestUri.Length);
 
-        LogFetchXmlDiagnostic(
-            plan,
-            entity.LogicalName,
-            "aggregate",
-            built.FetchXml,
-            built.AppliedFilterSummary,
-            sortSummary: null);
-
         var http = await GetAggregateHttpAsync(built.RelativeRequestUri, cancellationToken);
         if (http.IsSuccess)
         {
-            var result = ToAggregateResult(plan, entity, built, ParseRows(http.Body, entity));
-            LogCrmBusinessSuccess("aggregate", rowCount: result.Items.Count, count: null);
-            return result;
+            return ToAggregateResult(plan, entity, built, ParseRows(http.Body, entity));
         }
 
         var err = DynamicsCrmErrorParser.Parse(http.Body);
-        LogCrmBusinessFailure("aggregate", http.StatusCode, err.Code, err.Message);
         _logger.LogWarning(
             "Aggregate GET failed. Status={Status}, Entity={Entity}, Code={Code}, Message={Message}",
             http.StatusCode,
@@ -715,59 +695,6 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
         }
 
         return false;
-    }
-
-    private void LogFetchXmlDiagnostic(
-        CrmQueryPlan plan,
-        string entityLogicalName,
-        string operation,
-        string? fetchXml,
-        IReadOnlyList<string> appliedFilters,
-        string? sortSummary)
-    {
-        _diagnostics.LogFetchXml(sb =>
-        {
-            sb.AppendLine($"Operation: {operation}");
-            sb.AppendLine($"RootEntity: {entityLogicalName}");
-            sb.AppendLine($"Select: [{string.Join(", ", plan.Select)}]");
-            sb.AppendLine($"FiltersSummary: [{string.Join(" | ", appliedFilters)}]");
-            sb.AppendLine($"Sort: {sortSummary ?? "(none)"}");
-            sb.AppendLine($"Aggregates: {_diagnostics.PrettyJsonSerialize(plan.Aggregates)}");
-            sb.AppendLine($"GroupBy: {_diagnostics.PrettyJsonSerialize(plan.GroupBy)}");
-            sb.AppendLine($"Links: {_diagnostics.PrettyJsonSerialize(plan.Links)}");
-            sb.AppendLine("FetchXml (final validated document; values may be redacted in log only):");
-            sb.AppendLine(_diagnostics.FormatFetchXmlForLog(fetchXml));
-        });
-    }
-
-    private void LogCrmBusinessSuccess(string operation, int rowCount, long? count)
-    {
-        _diagnostics.LogCrmHttpResponse(sb =>
-        {
-            sb.AppendLine("Category: Business FetchXML query (execution summary)");
-            sb.AppendLine($"Operation: {operation}");
-            sb.AppendLine("Success: true");
-            sb.AppendLine($"ResultRowCount: {rowCount}");
-            if (count is not null)
-            {
-                sb.AppendLine($"Count: {count}");
-            }
-
-            sb.AppendLine("Note: CRM record payloads are never logged.");
-        });
-    }
-
-    private void LogCrmBusinessFailure(string operation, int status, string? code, string? message)
-    {
-        _diagnostics.LogCrmHttpResponse(sb =>
-        {
-            sb.AppendLine("Category: Business FetchXML query (execution failure)");
-            sb.AppendLine($"Operation: {operation}");
-            sb.AppendLine($"Status: {status}");
-            sb.AppendLine("Success: false");
-            sb.AppendLine($"DynamicsErrorCode: {code ?? "(none)"}");
-            sb.AppendLine($"DynamicsErrorMessage: {_diagnostics.RedactText(message)}");
-        });
     }
 
     private static List<IReadOnlyDictionary<string, object?>> ParseRows(string json, CrmEntityMetadata entity)

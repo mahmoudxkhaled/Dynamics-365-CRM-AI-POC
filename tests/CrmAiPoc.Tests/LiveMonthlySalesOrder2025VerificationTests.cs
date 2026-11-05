@@ -7,7 +7,6 @@ using CrmAiPoc.Api.Crm.Dynamics;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
 using CrmAiPoc.Api.Crm.Query;
-using CrmAiPoc.Api.Diagnostics;
 using CrmAiPoc.Api.Models;
 using CrmAiPoc.Api.Security;
 using Microsoft.Extensions.AI;
@@ -129,7 +128,6 @@ public sealed class LiveMonthlySalesOrder2025VerificationTests
         }));
         services.AddSingleton(Options.Create(new GeminiOptions()));
         services.AddSingleton(Options.Create(new OpenAiOptions()));
-        services.AddPipelineDiagnosticsForTests(enabled: true);
         services.AddSingleton<EntityApprovalPolicy>();
         services.AddSingleton<CrmMetadataRegistry>();
         services.AddSingleton<CrmRelationshipLabeler>();
@@ -139,9 +137,7 @@ public sealed class LiveMonthlySalesOrder2025VerificationTests
                 client.BaseAddress = new Uri(baseUrl.EndsWith('/') ? baseUrl : baseUrl + "/");
                 client.Timeout = TimeSpan.FromSeconds(90);
             })
-            .AddHttpMessageHandler<DynamicsCrmDiagnosticsHandler>()
             .ConfigurePrimaryHttpMessageHandler(() => DynamicsCrmHttp.CreateHandler(crmOptions));
-        services.AddTransient<DynamicsCrmDiagnosticsHandler>();
         services.AddSingleton<DynamicsCrmHttp>();
         services.AddSingleton<DynamicsConnectivityService>();
         services.AddSingleton<ICrmMetadataService, DynamicsCrmMetadataService>();

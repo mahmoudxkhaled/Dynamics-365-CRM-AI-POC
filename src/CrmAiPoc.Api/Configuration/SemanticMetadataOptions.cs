@@ -21,4 +21,16 @@ public sealed class SemanticMetadataOptions
 
     /// <summary>When true, Development diagnostic endpoint is mapped.</summary>
     public bool EnableDiagnosticEndpoint { get; set; } = true;
+
+    /// <summary>
+    /// When true, completed embedding vectors are saved to a local JSON file and reused
+    /// across process restarts while the metadata content hash / model / dimensions match.
+    /// </summary>
+    public bool EnableDiskCache { get; set; } = true;
+
+    /// <summary>
+    /// Optional directory for the embedding cache file. When empty, uses
+    /// LocalApplicationData/CrmAiPoc/semantic-metadata-index/.
+    /// </summary>
+    public string? CacheDirectory { get; set; }
 }

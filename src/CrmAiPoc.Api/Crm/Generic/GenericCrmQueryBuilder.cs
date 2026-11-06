@@ -136,7 +136,7 @@ public sealed class GenericCrmQueryBuilder : IGenericCrmQueryBuilder
                 // Inner / filtered links remain and use distinct root counting below.
             }
 
-            linkColumns = BuildLinkColumns(resolvedLinks, getEntity);
+            linkColumns = BuildLinkColumns(entity, resolvedLinks, getEntity);
         }
 
         var selectLogical = ResolveSelectLogical(entity, plan.Select);
@@ -321,13 +321,24 @@ public sealed class GenericCrmQueryBuilder : IGenericCrmQueryBuilder
     }
 
     private static IReadOnlyList<CrmTableColumn> BuildLinkColumns(
+        CrmEntityMetadata rootEntity,
         IReadOnlyList<CrmResolvedLink> links,
         Func<string, CrmEntityMetadata?> getEntity)
     {
+        var flat = FlattenLinks(links).ToList();
+        var entityJoinCounts = flat
+            .GroupBy(l => l.LinkEntityLogicalName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+
         var cols = new List<CrmTableColumn>();
-        foreach (var link in FlattenLinks(links))
+        foreach (var link in flat)
         {
             var meta = getEntity(link.LinkEntityLogicalName);
+            var disambiguate = entityJoinCounts.TryGetValue(link.LinkEntityLogicalName, out var count) &&
+                               count > 1;
+            var relationshipLabel = ResolveLinkRelationshipDisplayName(
+                rootEntity, link, flat, getEntity);
+
             foreach (var attrName in link.SelectLogicalNames)
             {
                 CrmAttributeMetadata? attr = null;
@@ -336,12 +347,17 @@ public sealed class GenericCrmQueryBuilder : IGenericCrmQueryBuilder
                     attr = resolved;
                 }
 
-                var display = attr?.DisplayName ?? attrName;
                 var key = $"{link.Alias}.{attrName}";
                 cols.Add(new CrmTableColumn
                 {
                     Key = key,
-                    Label = $"{meta?.DisplayName ?? link.LinkEntityLogicalName} {display}".Trim(),
+                    Label = CrmLinkedColumnLabelResolver.Resolve(
+                        attributeDisplayName: attr?.DisplayName,
+                        attributeLogicalName: attrName,
+                        entityDisplayName: meta?.DisplayName,
+                        entityLogicalName: link.LinkEntityLogicalName,
+                        relationshipDisplayName: relationshipLabel,
+                        disambiguateByRelationship: disambiguate),
                     Kind = attr?.Kind.ToString().ToLowerInvariant() ?? "string",
                     LogicalName = attrName
                 });
@@ -349,6 +365,36 @@ public sealed class GenericCrmQueryBuilder : IGenericCrmQueryBuilder
         }
 
         return cols;
+    }
+
+    private static string? ResolveLinkRelationshipDisplayName(
+        CrmEntityMetadata rootEntity,
+        CrmResolvedLink link,
+        IReadOnlyList<CrmResolvedLink> allLinks,
+        Func<string, CrmEntityMetadata?> getEntity)
+    {
+        IEnumerable<CrmEntityMetadata?> Candidates()
+        {
+            yield return rootEntity;
+            yield return getEntity(link.LinkEntityLogicalName);
+            foreach (var other in allLinks)
+            {
+                yield return getEntity(other.LinkEntityLogicalName);
+            }
+        }
+
+        foreach (var entity in Candidates())
+        {
+            var rel = entity?.Relationships.FirstOrDefault(r =>
+                r.SchemaName.Equals(link.RelationshipSchemaName, StringComparison.OrdinalIgnoreCase));
+            var label = CrmLinkedColumnLabelResolver.ResolveRelationshipDisplayName(rel);
+            if (!string.IsNullOrWhiteSpace(label))
+            {
+                return label;
+            }
+        }
+
+        return null;
     }
 
     private static int ClampLimit(int limit) =>

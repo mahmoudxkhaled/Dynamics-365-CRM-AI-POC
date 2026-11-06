@@ -110,12 +110,9 @@ export class ChatWindowComponent implements OnInit, AfterViewChecked, OnDestroy 
         if (data.privacySafeToolExecution && responseType !== 'clarification') {
           this.push({
             role: 'meta',
-            text:
-              'Privacy-safe: tool=' +
-              (data.selectedTool || '?') +
-              '; CRM→AI records=' +
-              (data.outboundAiContainedCrmRecords ? 'YES' : 'NO') +
-              (data.crmWhoAmIUserId ? '; WhoAmI=' + data.crmWhoAmIUserId : '')
+            text: data.outboundAiContainedCrmRecords
+              ? 'Warning: CRM records may have been included in the AI request.'
+              : 'Your CRM data stayed private. Records were not sent to the AI model.'
           });
         }
         this.loading = false;

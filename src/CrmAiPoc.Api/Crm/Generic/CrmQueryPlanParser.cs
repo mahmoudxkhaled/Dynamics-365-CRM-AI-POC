@@ -1149,6 +1149,7 @@ public static class CrmQueryPlanParser
             int i => i,
             long l => (int)l,
             double d => (int)d,
+            JsonElement je when je.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined => null,
             JsonElement je when je.TryGetInt32(out var ji) => ji,
             string s when int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) => parsed,
             _ => null

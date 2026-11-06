@@ -74,7 +74,10 @@ public sealed class CrmAiTools
         [Description("JSON array of sorts: [{field,direction}] max 2.")] string? sortJson = null,
         [Description("Sort field logical name from approved metadata.")] string? sortField = null,
         [Description("asc or desc.")] string? sortDirection = "desc",
-        [Description("Max rows 1-50 for list.")] int limit = 10,
+        [Description(
+            "Optional max rows for list (1-50). Omit or null to use the backend default. " +
+            "Not required for count/aggregate.")]
+        int? limit = null,
         [Description("Parent entity for one-hop relationship filter.")] string? relatedFromEntity = null,
         [Description("Parent record GUID for one-hop relationship filter.")] string? relatedFromId = null,
         [Description("JSON array of aggregates for reports: [{function:count|sum|avg|min|max, field, alias}] max 3. Required when operation=aggregate.")] string? aggregatesJson = null,

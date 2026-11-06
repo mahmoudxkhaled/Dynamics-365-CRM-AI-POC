@@ -94,6 +94,20 @@ builder.Services.Configure<OllamaOptions>(options =>
 
 builder.Services.Configure<SemanticMetadataOptions>(
     builder.Configuration.GetSection(SemanticMetadataOptions.SectionName));
+builder.Services.PostConfigure<SemanticMetadataOptions>(options =>
+{
+    // Keep the embedding cache inside the API app folder (ContentRoot/App_Data/...).
+    if (string.IsNullOrWhiteSpace(options.CacheDirectory))
+    {
+        options.CacheDirectory = Path.Combine("App_Data", "semantic-metadata-index");
+    }
+
+    if (!Path.IsPathRooted(options.CacheDirectory))
+    {
+        options.CacheDirectory = Path.GetFullPath(
+            Path.Combine(builder.Environment.ContentRootPath, options.CacheDirectory));
+    }
+});
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>

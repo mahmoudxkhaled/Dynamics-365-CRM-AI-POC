@@ -146,15 +146,18 @@ public sealed class InMemorySemanticMetadataIndex
 
     internal static string ResolveCacheDirectory(string? configuredDirectory)
     {
-        if (!string.IsNullOrWhiteSpace(configuredDirectory))
+        var relativeOrAbsolute = string.IsNullOrWhiteSpace(configuredDirectory)
+            ? Path.Combine("App_Data", "semantic-metadata-index")
+            : configuredDirectory.Trim();
+
+        if (Path.IsPathRooted(relativeOrAbsolute))
         {
-            return Path.GetFullPath(configuredDirectory.Trim());
+            return Path.GetFullPath(relativeOrAbsolute);
         }
 
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CrmAiPoc",
-            "semantic-metadata-index");
+        // Prefer already-resolved absolute paths from Program PostConfigure (content root).
+        // Fallback for non-DI construction: resolve under the process base directory.
+        return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, relativeOrAbsolute));
     }
 
     private bool TryLoadFromDisk(

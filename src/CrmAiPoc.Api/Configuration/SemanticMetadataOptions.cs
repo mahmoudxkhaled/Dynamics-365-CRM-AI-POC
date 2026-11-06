@@ -29,8 +29,8 @@ public sealed class SemanticMetadataOptions
     public bool EnableDiskCache { get; set; } = true;
 
     /// <summary>
-    /// Optional directory for the embedding cache file. When empty, uses
-    /// LocalApplicationData/CrmAiPoc/semantic-metadata-index/.
+    /// Directory for the embedding cache file, relative to the API content root
+    /// (or an absolute path). Default: App_Data/semantic-metadata-index.
     /// </summary>
-    public string? CacheDirectory { get; set; }
+    public string? CacheDirectory { get; set; } = Path.Combine("App_Data", "semantic-metadata-index");
 }

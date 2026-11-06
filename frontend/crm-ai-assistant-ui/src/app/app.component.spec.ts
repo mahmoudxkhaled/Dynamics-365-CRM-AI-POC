@@ -16,12 +16,10 @@ describe('AppComponent', () => {
     expect(app).toBeTruthy();
   });
 
-  it('should render brand title', () => {
+  it('should render CRM-style page title', () => {
     const fixture = TestBed.createComponent(AppComponent);
     fixture.detectChanges();
     const compiled = fixture.nativeElement as HTMLElement;
-    expect(compiled.querySelector('.brand-text h1')?.textContent).toContain(
-      'WE CRM AI Assistant'
-    );
+    expect(compiled.querySelector('.page-title')?.textContent).toContain('WE AI Assistant');
   });
 });

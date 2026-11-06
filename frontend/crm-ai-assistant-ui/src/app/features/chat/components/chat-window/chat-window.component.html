@@ -1,7 +1,4 @@
 <section class="panel chat-panel">
-  <div class="panel-head">
-    <h2>AI Chat</h2>
-  </div>
   <div class="chat" #chatScroll>
     @for (msg of messages; track trackById($index, msg)) {
       <app-chat-message
@@ -11,9 +8,17 @@
       />
     }
 
+    @if (loading) {
+      <div class="msg assistant typing" role="status" aria-live="polite" aria-label="Assistant is typing">
+        <span class="typing-dot" aria-hidden="true"></span>
+        <span class="typing-dot" aria-hidden="true"></span>
+        <span class="typing-dot" aria-hidden="true"></span>
+      </div>
+    }
+
     @if (showSuggestions) {
       <div class="suggestions">
-        <p class="suggestions-title">Try a suggested question</p>
+        <p class="suggestions-title">Suggested questions</p>
         <div class="suggestions-grid">
           @for (q of suggestedQuestions; track q) {
             <button
@@ -30,7 +35,7 @@
     }
   </div>
   <app-chat-input
-    [disabled]="inputBlocked"
+    [loading]="loading"
     [cooldownSeconds]="cooldownRemainingSeconds"
     (send)="onSend($event)"
   />

@@ -5,61 +5,64 @@
 .clarification {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   max-width: 720px;
 }
 
 .clarification-message {
   margin: 0;
-  font-size: 0.95rem;
+  font-size: 14px;
   line-height: 1.45;
 }
 
 .clarification-options {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .clarification-chip {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
+  gap: 2px;
   width: 100%;
   text-align: left;
-  padding: 10px 12px;
-  border-radius: var(--we-radius-sm, 8px);
-  border: 1px solid var(--border);
-  background: var(--we-white, #fff);
-  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 2px;
+  border: 1px solid var(--crm-border-strong, #c8c6c4);
+  background: var(--crm-surface, #fff);
+  color: var(--crm-text, #323130);
   font-family: inherit;
   cursor: pointer;
   transition:
-    border-color 0.15s ease,
-    background 0.15s ease,
-    color 0.15s ease;
+    border-color 0.1s ease,
+    background 0.1s ease;
 }
 
 .clarification-chip:hover:not(:disabled) {
-  border-color: var(--we-purple-tint, #c4b5e0);
-  background: var(--accent-soft, #f4f0fa);
-  color: var(--accent, #5b2d8e);
+  border-color: var(--crm-blue, #0078d4);
+  background: #eff6fc;
+}
+
+.clarification-chip:focus-visible {
+  outline: none;
+  box-shadow: var(--crm-focus, 0 0 0 1px #fff, 0 0 0 3px #0078d4);
 }
 
 .clarification-chip:disabled {
-  opacity: 0.6;
+  opacity: 0.55;
   cursor: wait;
 }
 
 .clarification-label {
-  font-size: 0.8rem;
-  font-weight: 700;
-  color: var(--accent, #5b2d8e);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--crm-blue-pressed, #005a9e);
 }
 
 .clarification-question {
-  font-size: 0.9rem;
+  font-size: 13px;
   line-height: 1.4;
-  color: var(--text);
+  color: var(--crm-text, #323130);
 }

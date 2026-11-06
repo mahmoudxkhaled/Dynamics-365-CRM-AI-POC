@@ -21,14 +21,14 @@ export class ChatWindowComponent implements OnInit, AfterViewChecked, OnDestroy 
   /** Minimum gap between /api/chat requests (rate-limit / concurrency guard). */
   private static readonly RequestCooldownMs = 60_000;
 
-  /** Supported suggested questions (read-only CRM scenarios only). */
+  /** Supported suggested questions (read-only CRM scenarios only, English). */
   readonly suggestedQuestions: string[] = [
-    'Show the latest 5 Sales Orders.',
-    'How many Sales Orders are there by status?',
-    'Show monthly Sales Order counts for the last 6 months.',
-    'Show total Sales Order amount grouped by status.',
-    'Show the latest 5 Accounts.',
-    'How many Sales Orders were created in the last 30 days?'
+    'Show the latest 5 accounts',
+    'Show the latest 5 contacts',
+    'Show the latest 5 leads',
+    'Show the latest 5 sales orders',
+    'How many sales orders are there by status?',
+    'Show total sales order amount grouped by status'
   ];
 
   messages: ChatUiMessage[] = [];
@@ -47,7 +47,7 @@ export class ChatWindowComponent implements OnInit, AfterViewChecked, OnDestroy 
   ngOnInit(): void {
     this.push({
       role: 'meta',
-      text: 'Conversation ready. Ask about accounts, contacts, leads, or sales orders.'
+      text: 'Conversation ready. Select a suggested question or type your own.'
     });
   }
 
@@ -91,6 +91,7 @@ export class ChatWindowComponent implements OnInit, AfterViewChecked, OnDestroy 
 
     this.push({ role: 'user', text: trimmed });
     this.loading = true;
+    this.shouldScroll = true;
     this.beginRequestCooldown();
 
     // Independent request: only the selected/complete question text is sent (no chat history to Groq).

@@ -46,7 +46,7 @@ public sealed class SemanticChatPipelineUnitTests
     }
 
     [Fact]
-    public async Task Ambiguous_Question_Returns_Clarification_Without_Crm_Query()
+    public async Task Genuine_Ambiguity_Clarification_Returns_Without_Crm_Query()
     {
         var harness = await CreateHarnessAsync(
             semanticError: null,
@@ -54,8 +54,9 @@ public sealed class SemanticChatPipelineUnitTests
         harness.Recorder.Reset();
         harness.Crm.Reset();
 
+        // User question is relationship-ambiguous; mock returns clarification (not "latest N" as a required clarify path).
         var response = await harness.Chat.ChatAsync(
-            new ChatRequestDto { Message = "Show the latest 5 products." },
+            new ChatRequestDto { Message = "Show products with their related account." },
             CancellationToken.None);
 
         Assert.Equal(1, harness.Recorder.CallCount);
@@ -69,10 +70,28 @@ public sealed class SemanticChatPipelineUnitTests
         Assert.All(response.Suggestions, s =>
         {
             Assert.False(string.IsNullOrWhiteSpace(s.Label));
-            Assert.Contains("products", s.Question, StringComparison.OrdinalIgnoreCase);
             Assert.Contains(' ', s.Question);
         });
-        Assert.Contains("Which of these", response.Reply, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Which related", response.Reply, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SystemPrompt_Defines_Latest_Convention_And_Avoids_Latest_Clarify_Example()
+    {
+        var messages = ChatService.BuildOutboundHistory("Show the latest 5 products.");
+        var prompt = Assert.Single(messages, m => m.Role == ChatRole.System &&
+            m.Text is not null &&
+            m.Text.Contains("query_crm", StringComparison.Ordinal)).Text!;
+
+        Assert.Contains("latest", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("createdon", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Prefer calling query_crm", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "Show the latest 5 Sales Orders by Created On",
+            prompt,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Customer Account", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Branch Account", prompt, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -208,9 +227,9 @@ public sealed class SemanticChatPipelineUnitTests
                     }
                 }
             ],
+            // Omit createdon/modifiedon from hits — catalog must still retain them as structural.
             AttributeHits =
             [
-                HitAttr("product", "createdon", 0.8f),
                 HitAttr("product", "name", 0.7f),
                 HitAttr("product", "productid", 0.7f)
             ],
@@ -224,6 +243,7 @@ public sealed class SemanticChatPipelineUnitTests
         var product = Assert.Single(built.Catalog.Detail);
         Assert.Equal("product", product.LogicalName);
         Assert.Contains(product.Attributes, a => a.LogicalName == "createdon" && a.Type == "DateTime" && a.Sortable);
+        Assert.Contains(product.Attributes, a => a.LogicalName == "modifiedon" && a.Type == "DateTime");
         Assert.Contains(product.Attributes, a => a.LogicalName == "name");
         Assert.Contains(product.Attributes, a => a.LogicalName == "productid");
         Assert.DoesNotContain(product.Attributes, a => a.LogicalName == "price");
@@ -569,7 +589,7 @@ public sealed class SemanticChatPipelineUnitTests
             {
                 Mode.Clarification =>
                     """
-                    {"type":"clarification","message":"Which of these queries would you like to run?","suggestions":[{"label":"By Created On","question":"Show the latest 5 products by Created On.","entityLogicalName":"product","attributeLogicalNames":["createdon"]},{"label":"By Modified On","question":"Show the latest 5 products by Modified On.","entityLogicalName":"product","attributeLogicalNames":["modifiedon"]}]}
+                    {"type":"clarification","message":"Which related account should I use?","suggestions":[{"label":"Supplier Account","question":"Show products with their Supplier Account name.","entityLogicalName":"product","attributeLogicalNames":["name"],"relationshipSchemaNames":[]},{"label":"Owning Account","question":"Show products with their Owning Account name.","entityLogicalName":"product","attributeLogicalNames":["createdon"],"relationshipSchemaNames":[]}]}
                     """,
                 Mode.MalformedClarification =>
                     """
@@ -577,7 +597,7 @@ public sealed class SemanticChatPipelineUnitTests
                     """,
                 Mode.UnauthorizedAttributeClarification =>
                     """
-                    {"type":"clarification","message":"Which of these queries would you like to run?","suggestions":[{"label":"Fake","question":"Show the latest 5 products by Secret Field.","entityLogicalName":"product","attributeLogicalNames":["secret_field"]},{"label":"By Created On","question":"Show the latest 5 products by Created On.","entityLogicalName":"product","attributeLogicalNames":["createdon"]}]}
+                    {"type":"clarification","message":"Which of these queries would you like to run?","suggestions":[{"label":"Fake","question":"Show products by Secret Field.","entityLogicalName":"product","attributeLogicalNames":["secret_field"]},{"label":"By Name","question":"Show products sorted by Name.","entityLogicalName":"product","attributeLogicalNames":["name"]}]}
                     """,
                 _ => "Query planned from semantic catalog."
             };

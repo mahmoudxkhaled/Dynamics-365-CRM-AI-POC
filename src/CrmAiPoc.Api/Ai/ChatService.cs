@@ -23,10 +23,14 @@ public sealed partial class ChatService
 
         Rules:
         - Always call query_crm for CRM reads (list, count, aggregate, filters, sort, dates, limits, and related-entity joins via linksJson).
+        - Prefer calling query_crm when the question is sufficiently clear using catalog metadata and ordinary business conventions.
         - Choose entity logicalName only from the approved catalog. Never invent entities, fields, or relationships.
         - Root entity must be the requested result grain (what records should be returned), not merely the first entity named.
         - Choose operation carefully: list for records, count for a single total, aggregate when grouping or summing.
         - Include all requested filters, date ranges, select fields, sort, and limit in the tool call. Do not omit constraints the user asked for.
+        - Ordinary conventions (do not ask clarification for these):
+          - "latest", "newest", or "most recent" records without a named date field means list with sort createdon descending when createdon exists and is sortable in the catalog. You may omit sortField and rely on the backend default createdon desc when that field exists.
+          - A plain "top N" / "first N" / "show N" list without another ranking field means limit=N on the root entity.
         - When related business data is requested, pass linksJson with related entity, purpose from catalog relationships labels, select fields, and joinType.
         - Prefer purpose/label matching the user's business wording.
         - When multiple catalog relationships exist between the same entities, you MUST resolve the intended one before calling query_crm:
@@ -38,9 +42,9 @@ public sealed partial class ChatService
 
         Ambiguity handling (same single response — never a second AI call):
         - When the question is clear enough, call query_crm as usual. Do not ask unnecessary clarifications.
-        - When intent is genuinely ambiguous across catalog attributes, relationships, or interpretations and calling query_crm would require guessing:
-          DO NOT call query_crm. Respond with ONLY a JSON object (no markdown fences, no other prose):
-          {"type":"clarification","message":"Which of these queries would you like to run?","suggestions":[{"label":"By Created On","question":"Show the latest 5 Sales Orders by Created On.","entityLogicalName":"salesorder","attributeLogicalNames":["createdon"],"relationshipSchemaNames":[]}]}
+        - Ask for clarification ONLY when intent is genuinely ambiguous across catalog attributes, relationships, or interpretations and cannot be resolved from metadata plus the ordinary conventions above.
+        - When clarifying, DO NOT call query_crm. Respond with ONLY a JSON object (no markdown fences, no other prose):
+          {"type":"clarification","message":"Which related account should I use?","suggestions":[{"label":"Customer Account","question":"Show Sales Orders with their Customer Account name.","entityLogicalName":"salesorder","attributeLogicalNames":[],"relationshipSchemaNames":["te_account_salesorder_customeraccountid"]},{"label":"Branch Account","question":"Show Sales Orders with their Branch Account name.","entityLogicalName":"salesorder","attributeLogicalNames":[],"relationshipSchemaNames":["te_account_salesorder_branchaccountid"]}]}
         - Provide 2–4 suggestions. Each question must be a complete standalone English question.
         - Preserve the user's unambiguous constraints (entity grain, limits, filters, sorting intent). Change only the ambiguous dimension.
         - entityLogicalName, attributeLogicalNames, and relationshipSchemaNames MUST come from the APPROVED_CRM_METADATA_CATALOG. Never invent fields or SchemaNames.
@@ -48,7 +52,7 @@ public sealed partial class ChatService
         - Labels are short (for UI chips); questions are full sentences the user can submit unchanged.
         - The backend does not resume partial query plans. Every clarification chip must be a full question the user can submit as a new independent request.
 
-        Dates (preferred): relativeDateField=createdon|modifiedon plus dateRange object (or dateRangeJson).
+        Date filters (preferred): relativeDateField=createdon|modifiedon plus dateRange object (or dateRangeJson) when the user asks for a time period filter — not when they only ask for latest/newest records.
         ALWAYS include kind. Canonical examples:
         {"kind":"calendar_year","year":2025}
         {"kind":"last_n_calendar_months","n":8}
@@ -215,7 +219,8 @@ public sealed partial class ChatService
             Tools = [queryCrmTool],
             // Auto allows either query_crm or a structured clarification JSON text response.
             ToolMode = ChatToolMode.Auto,
-            Temperature = 0.1f
+            // Lower temperature reduces planner drift; not a guarantee of identical outputs.
+            Temperature = 0f
         };
 
         var requestPayloadCharacters = outboundHistory.Sum(m => m.Text?.Length ?? 0);

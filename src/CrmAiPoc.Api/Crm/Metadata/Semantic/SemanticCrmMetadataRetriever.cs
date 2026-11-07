@@ -205,11 +205,13 @@ public sealed class SemanticCrmMetadataRetriever : ISemanticCrmMetadataRetriever
                 }
             }
 
-            // Structural primary id / name from Dynamics metadata — not similarity-gated.
+            // Structural identity + audit dates from Dynamics metadata — not similarity-gated.
             if (approvedByName.TryGetValue(entityName, out var meta))
             {
                 TryAddStructuralAttribute(allAttributesByKey, entityName, meta.PrimaryIdAttribute, TryAdd);
                 TryAddStructuralAttribute(allAttributesByKey, entityName, meta.PrimaryNameAttribute, TryAdd);
+                TryAddStructuralAttribute(allAttributesByKey, entityName, "createdon", TryAdd);
+                TryAddStructuralAttribute(allAttributesByKey, entityName, "modifiedon", TryAdd);
             }
         }
 

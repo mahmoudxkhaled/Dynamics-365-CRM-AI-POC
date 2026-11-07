@@ -305,6 +305,67 @@ public sealed class SemanticMetadataRetrievalTests
         Assert.Equal("Question is required.", result.Error);
     }
 
+    [Fact]
+    public async Task Retriever_Includes_CreatedOn_And_ModifiedOn_As_Structural_Even_When_Not_TopK()
+    {
+        var options = Options.Create(new CrmOptions { ApprovedEntities = ["product"] });
+        var policy = new EntityApprovalPolicy(options);
+        var registry = new CrmMetadataRegistry();
+        registry.Upsert(MakeProductEntity());
+        var metadata = new MockCrmMetadataService(registry, policy);
+
+        // Boost only entity + price; leave createdon/modifiedon at baseline similarity.
+        var fake = new ScriptedEmbeddingClient((input, _) =>
+        {
+            if (input.StartsWith("search_query:", StringComparison.Ordinal))
+            {
+                return Task.FromResult(MakeUnitVector(50));
+            }
+
+            if (input.Contains("CRM entity", StringComparison.Ordinal) &&
+                input.Contains("logicalName=product", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(MakeUnitVector(50));
+            }
+
+            if (input.Contains("entity=product", StringComparison.OrdinalIgnoreCase) &&
+                input.Contains("logicalName=price", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(MakeUnitVector(49));
+            }
+
+            return Task.FromResult(MakeUnitVector(1));
+        });
+
+        var retriever = new SemanticCrmMetadataRetriever(
+            metadata,
+            policy,
+            fake,
+            new InMemorySemanticMetadataIndex(),
+            Options.Create(new SemanticMetadataOptions
+            {
+                TopKEntities = 1,
+                TopKAttributesPerEntity = 1,
+                TopKRelationships = 0
+            }),
+            NullLogger<SemanticCrmMetadataRetriever>.Instance);
+
+        var result = await retriever.RetrieveAsync("product price list");
+        Assert.Null(result.Error);
+        Assert.Contains(result.AttributeHits, h =>
+            h.Document.EntityLogicalName == "product" &&
+            h.Document.AttributeLogicalName == "createdon");
+        Assert.Contains(result.AttributeHits, h =>
+            h.Document.EntityLogicalName == "product" &&
+            h.Document.AttributeLogicalName == "modifiedon");
+        Assert.Contains(result.AttributeHits, h =>
+            h.Document.EntityLogicalName == "product" &&
+            h.Document.AttributeLogicalName == "productid");
+        Assert.Contains(result.AttributeHits, h =>
+            h.Document.EntityLogicalName == "product" &&
+            h.Document.AttributeLogicalName == "name");
+    }
+
     private static CrmEntityMetadata MakeProductEntity(bool extraAttr = false)
     {
         var attrs = new List<CrmAttributeMetadata>
@@ -331,6 +392,16 @@ public sealed class SemanticMetadataRetrievalTests
                 LogicalName = "createdon",
                 ODataPropertyName = "createdon",
                 DisplayName = "Created On",
+                Kind = CrmAttributeKind.DateTime,
+                IsValidForRead = true,
+                IsSortable = true,
+                IsFilterable = true
+            },
+            new()
+            {
+                LogicalName = "modifiedon",
+                ODataPropertyName = "modifiedon",
+                DisplayName = "Modified On",
                 Kind = CrmAttributeKind.DateTime,
                 IsValidForRead = true,
                 IsSortable = true,

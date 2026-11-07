@@ -453,6 +453,15 @@ public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
             requiredStructural.Add(entity.PrimaryNameAttribute);
         }
 
+        // Core audit dates when present and readable — do not rely on semantic Top-K alone.
+        foreach (var auditField in new[] { "createdon", "modifiedon" })
+        {
+            if (entity.TryGetAttribute(auditField, out var auditAttr) && auditAttr.IsValidForRead)
+            {
+                requiredStructural.Add(auditAttr.LogicalName);
+            }
+        }
+
         var attributes = entity.Attributes
             .Where(a => a.IsValidForRead)
             .Where(a =>

@@ -24,23 +24,26 @@ public static class CrmQueryIntentHelper
             return null;
         }
 
-        var stubs = policy.ApprovedLogicalNames
-            .Select(logical => GenericApprovedEntityStubFactory.Create(logical, policy))
-            .ToArray();
-        var enriched = stubs.Select(e => new CrmEntityMetadata
+        // Thin vocabulary entities from approval config only — not CRM schema seeds.
+        var vocabulary = policy.ApprovedLogicalNames.Select(logical =>
         {
-            LogicalName = e.LogicalName,
-            EntitySetName = e.EntitySetName,
-            DisplayName = e.DisplayName ?? e.LogicalName,
-            PrimaryIdAttribute = e.PrimaryIdAttribute,
-            PrimaryNameAttribute = e.PrimaryNameAttribute,
-            IsApprovedForAi = e.IsApprovedForAi,
-            Aliases = policy.GetAliases(e.LogicalName),
-            Attributes = e.Attributes,
-            Relationships = e.Relationships
+            var name = logical.Trim().ToLowerInvariant();
+            return new CrmEntityMetadata
+            {
+                LogicalName = name,
+                EntitySetName = name + "s",
+                DisplayName = char.ToUpperInvariant(name[0]) + name[1..],
+                PrimaryIdAttribute = name + "id",
+                PrimaryNameAttribute = "name",
+                IsApprovedForAi = true,
+                Aliases = policy.GetAliases(name),
+                Attributes = Array.Empty<CrmAttributeMetadata>(),
+                Relationships = Array.Empty<CrmRelationshipMetadata>(),
+                Provenance = CrmMetadataProvenance.Live
+            };
         }).ToArray();
 
-        var resolved = CrmEntityResolver.Resolve(message, aiProposedEntity: null, enriched, policy);
+        var resolved = CrmEntityResolver.Resolve(message, aiProposedEntity: null, vocabulary, policy);
         return resolved.Status == CrmEntityResolutionStatus.Resolved ? resolved.LogicalName : null;
     }
 }

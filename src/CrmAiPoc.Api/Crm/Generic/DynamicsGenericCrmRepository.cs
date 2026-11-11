@@ -64,7 +64,12 @@ public sealed class DynamicsGenericCrmRepository : IGenericCrmRepository
         var entity = await _metadata.GetEntityAsync(logical, cancellationToken);
         if (entity is null || !entity.IsApprovedForAi)
         {
-            return Fail(plan, $"Metadata for approved entity '{logical}' is unavailable.");
+            _logger.LogWarning(
+                "query_crm blocked: live Dynamics metadata unavailable for approved entity {Entity}.",
+                logical);
+            return Fail(
+                plan,
+                $"CRM metadata for '{logical}' could not be loaded from Dynamics 365. Please try again later.");
         }
 
         CrmEntityMetadata? relatedFrom = null;

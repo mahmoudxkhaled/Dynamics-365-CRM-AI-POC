@@ -18,7 +18,7 @@ public static class ClarificationSuggestionValidator
     }
 
     public static ValidationResult Validate(
-        ClarificationResponseParser.ParseResult parsed,
+        ClarifyCrmArgumentParser.ParseResult parsed,
         CrmAiMetadataCatalogBuildResult catalog,
         EntityApprovalPolicy approvalPolicy)
     {

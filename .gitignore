@@ -17,6 +17,9 @@ obj/
 agent-transcripts/
 terminals/
 
+## Local build / test output dumps (may copy appsettings with secrets)
+artifacts/
+
 ## Test / coverage
 TestResults/
 coverage/

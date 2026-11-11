@@ -6,8 +6,10 @@ import {
   OnInit,
   ViewChild
 } from '@angular/core';
+import { Subscription } from 'rxjs';
 import { ChatUiMessage } from '../../../../core/models/chat-response.model';
 import { ChatService } from '../../../../core/services/chat.service';
+import { ChatSessionService } from '../../../../core/services/chat-session.service';
 
 @Component({
   selector: 'app-chat-window',
@@ -21,14 +23,13 @@ export class ChatWindowComponent implements OnInit, AfterViewChecked, OnDestroy 
   /** Minimum gap between /api/chat requests (rate-limit / concurrency guard). */
   private static readonly RequestCooldownMs = 60_000;
 
-  /** Supported suggested questions (read-only CRM scenarios only, English). */
+  /** English-only, read-only CRM suggestions for welcome mode. */
   readonly suggestedQuestions: string[] = [
-    'Show the latest 5 accounts',
-    'Show the latest 5 contacts',
-    'Show the latest 5 leads',
-    'Show the latest 5 sales orders',
-    'How many sales orders are there by status?',
-    'Show total sales order amount grouped by status'
+    // 'Show me the latest 5 sales orders',
+    // 'List the latest 5 accounts',
+    // 'Show the newest contacts',
+    // 'Count sales orders created this month',
+    // 'Show the latest 5 leads'
   ];
 
   messages: ChatUiMessage[] = [];
@@ -41,26 +42,35 @@ export class ChatWindowComponent implements OnInit, AfterViewChecked, OnDestroy 
   private nextId = 1;
   private cooldownUntilMs = 0;
   private cooldownTimerId: ReturnType<typeof setInterval> | null = null;
+  private chatRequestSub: Subscription | null = null;
+  private newChatSub: Subscription | null = null;
 
-  constructor(private readonly chatService: ChatService) {}
+  constructor(
+    private readonly chatService: ChatService,
+    private readonly chatSession: ChatSessionService
+  ) { }
 
   ngOnInit(): void {
-    this.push({
-      role: 'meta',
-      text: 'Conversation ready. Select a suggested question or type your own.'
-    });
+    // Empty conversation starts in Welcome Mode (no seeded meta banner).
+    this.newChatSub = this.chatSession.newChat$.subscribe(() => this.startNewChat());
   }
 
   ngOnDestroy(): void {
     this.clearCooldownTimer();
+    this.stopProcessingIndicator();
+    this.chatRequestSub?.unsubscribe();
+    this.chatRequestSub = null;
+    this.newChatSub?.unsubscribe();
+    this.newChatSub = null;
+  }
+
+  /** Welcome until the user has started a real conversation turn. */
+  get isWelcomeMode(): boolean {
+    return !this.loading && !this.messages.some((m) => m.role === 'user' || m.role === 'assistant');
   }
 
   get inputBlocked(): boolean {
     return this.loading || this.cooldownRemainingSeconds > 0;
-  }
-
-  get showSuggestions(): boolean {
-    return !this.inputBlocked && this.messages.every((m) => m.role === 'meta');
   }
 
   ngAfterViewChecked(): void {
@@ -79,6 +89,19 @@ export class ChatWindowComponent implements OnInit, AfterViewChecked, OnDestroy 
     this.onSend(question);
   }
 
+  startNewChat(): void {
+    this.chatRequestSub?.unsubscribe();
+    this.chatRequestSub = null;
+    this.stopProcessingIndicator();
+    this.clearCooldownTimer();
+    this.cooldownRemainingSeconds = 0;
+    this.cooldownUntilMs = 0;
+    this.messages = [];
+    this.conversationId = null;
+    this.nextId = 1;
+    this.shouldScroll = false;
+  }
+
   onSend(message: string): void {
     if (this.inputBlocked) {
       return;
@@ -89,14 +112,19 @@ export class ChatWindowComponent implements OnInit, AfterViewChecked, OnDestroy 
       return;
     }
 
+    // Drop any in-flight request so we never show duplicate/stale indicators.
+    this.chatRequestSub?.unsubscribe();
+    this.chatRequestSub = null;
+
+    // Immediate switch to Conversation Mode (before API returns).
     this.push({ role: 'user', text: trimmed });
-    this.loading = true;
-    this.shouldScroll = true;
+    this.startProcessingIndicator();
     this.beginRequestCooldown();
 
     // Independent request: only the selected/complete question text is sent (no chat history to Groq).
-    this.chatService.sendMessage(trimmed, this.conversationId).subscribe({
+    this.chatRequestSub = this.chatService.sendMessage(trimmed, this.conversationId).subscribe({
       next: (data) => {
+        this.stopProcessingIndicator();
         this.conversationId = data.conversationId;
         const responseType = data.responseType || 'answer';
         this.push({
@@ -115,21 +143,31 @@ export class ChatWindowComponent implements OnInit, AfterViewChecked, OnDestroy 
               : 'Your CRM data stayed private. Records were not sent to the AI model.'
           });
         }
-        this.loading = false;
+        this.chatRequestSub = null;
       },
       error: (err: Error) => {
+        this.stopProcessingIndicator();
         this.push({
           role: 'assistant',
           text: err.message || 'Request failed.',
           error: true
         });
-        this.loading = false;
+        this.chatRequestSub = null;
       }
     });
   }
 
   trackById(_: number, msg: ChatUiMessage): string {
     return msg.id;
+  }
+
+  private startProcessingIndicator(): void {
+    this.loading = true;
+    this.shouldScroll = true;
+  }
+
+  private stopProcessingIndicator(): void {
+    this.loading = false;
   }
 
   private push(partial: Omit<ChatUiMessage, 'id'>): void {

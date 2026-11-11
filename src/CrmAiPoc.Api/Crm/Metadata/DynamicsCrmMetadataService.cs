@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Dynamics;
@@ -17,9 +18,12 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
     private readonly CrmOptions _options;
     private readonly ILogger<DynamicsCrmMetadataService> _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _failedDiscoveryUtc =
+        new(StringComparer.OrdinalIgnoreCase);
     private DateTimeOffset _lastFullLoadUtc = DateTimeOffset.MinValue;
-    private bool _liveDiscoveryCompleted;
+    private bool _fullRefreshAttempted;
     private int _backgroundRefreshRunning;
+    private static readonly TimeSpan DiscoveryFailureCooldown = TimeSpan.FromSeconds(60);
 
     public DynamicsCrmMetadataService(
         DynamicsCrmHttp http,
@@ -39,11 +43,10 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
 
     public async Task EnsureApprovedEntitiesLoadedAsync(CancellationToken cancellationToken = default)
     {
-        EnsureSeedsPresent();
-
         var cacheTtl = TimeSpan.FromSeconds(Math.Max(60, _options.MetadataCacheSeconds));
-        var fresh = _liveDiscoveryCompleted &&
-                    _registry.GetApproved().Count >= _policy.ApprovedLogicalNames.Count &&
+        var allLive = _policy.ApprovedLogicalNames.All(IsLiveCached);
+        var fresh = _fullRefreshAttempted &&
+                    allLive &&
                     DateTimeOffset.UtcNow - _lastFullLoadUtc < cacheTtl;
 
         if (fresh)
@@ -51,10 +54,10 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
             return;
         }
 
-        // Stale-while-revalidate: keep serving cache/seeds and refresh in background when enabled.
+        // Stale-while-revalidate: serve existing live cache while refreshing in background.
         if (_options.MetadataStaleWhileRevalidate &&
-            _liveDiscoveryCompleted &&
-            _registry.GetApproved().Count > 0 &&
+            _fullRefreshAttempted &&
+            _registry.GetApproved().Any(e => e.Provenance == CrmMetadataProvenance.Live) &&
             Interlocked.CompareExchange(ref _backgroundRefreshRunning, 1, 0) == 0)
         {
             _ = Task.Run(async () =>
@@ -65,7 +68,7 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Background metadata refresh failed; continuing with stale cache.");
+                    _logger.LogWarning(ex, "Background metadata refresh failed; continuing with live cache.");
                 }
                 finally
                 {
@@ -80,46 +83,66 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
 
     public async Task<CrmEntityMetadata?> GetEntityAsync(string logicalName, CancellationToken cancellationToken = default)
     {
-        EnsureSeedsPresent();
-
-        if (_registry.TryGet(logicalName, out var cached))
+        var name = logicalName.Trim();
+        if (_registry.TryGet(name, out var cached) &&
+            cached.Provenance == CrmMetadataProvenance.Live &&
+            cached.Attributes.Count > 0)
         {
             return cached;
         }
 
+        if (IsInFailureCooldown(name))
+        {
+            _logger.LogWarning(
+                "Skipping Dynamics metadata discovery for {Entity}; recent failure cooldown active.",
+                name);
+            return null;
+        }
+
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(TimeSpan.FromSeconds(8));
+        cts.CancelAfter(TimeSpan.FromSeconds(25));
         try
         {
-            await RefreshAsync(logicalName, cts.Token);
+            await RefreshAsync(name, cts.Token);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogWarning("Metadata refresh timed out for {Entity}; continuing without live schema.", logicalName);
-            UpsertFallbackMetadata(logicalName);
+            _logger.LogWarning("Metadata refresh timed out for {Entity}.", name);
+            RememberDiscoveryFailure(name);
+            return null;
         }
 
-        return _registry.TryGet(logicalName, out var entity) ? entity : null;
+        return _registry.TryGet(name, out var entity) &&
+               entity.Provenance == CrmMetadataProvenance.Live &&
+               entity.Attributes.Count > 0
+            ? entity
+            : null;
     }
 
     public Task<IReadOnlyList<CrmEntityMetadata>> GetApprovedEntitiesAsync(CancellationToken cancellationToken = default)
     {
         _ = cancellationToken;
-        EnsureSeedsPresent();
+        // Live cache only — never invent entities that Dynamics has not returned.
         return Task.FromResult(_registry.GetApproved());
     }
 
     public async Task RefreshAsync(string? logicalName = null, CancellationToken cancellationToken = default)
     {
-        EnsureSeedsPresent();
-
         await _gate.WaitAsync(cancellationToken);
         try
         {
             if (!_options.EnableLiveIntegration || string.IsNullOrWhiteSpace(_options.BaseUrl))
             {
-                _liveDiscoveryCompleted = true;
-                _lastFullLoadUtc = DateTimeOffset.UtcNow;
+                _logger.LogWarning(
+                    "Dynamics metadata refresh skipped: EnableLiveIntegration={Enabled}, BaseUrlConfigured={HasBaseUrl}.",
+                    _options.EnableLiveIntegration,
+                    !string.IsNullOrWhiteSpace(_options.BaseUrl));
+                if (string.IsNullOrWhiteSpace(logicalName))
+                {
+                    _fullRefreshAttempted = true;
+                    _lastFullLoadUtc = DateTimeOffset.UtcNow;
+                }
+
                 return;
             }
 
@@ -130,18 +153,28 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Metadata discovery skipped because live CRM is not configured.");
-                _liveDiscoveryCompleted = true;
-                _lastFullLoadUtc = DateTimeOffset.UtcNow;
+                if (string.IsNullOrWhiteSpace(logicalName))
+                {
+                    _fullRefreshAttempted = true;
+                    _lastFullLoadUtc = DateTimeOffset.UtcNow;
+                }
+
                 return;
             }
 
             var targets = string.IsNullOrWhiteSpace(logicalName)
                 ? _policy.ApprovedLogicalNames.ToArray()
-                : [_policy.IsApproved(logicalName) ? logicalName.Trim() : logicalName.Trim()];
+                : [logicalName.Trim()];
 
             foreach (var name in targets)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (!_policy.IsApproved(name))
+                {
+                    _logger.LogWarning("Skipping metadata discovery for unapproved entity {Entity}.", name);
+                    continue;
+                }
+
                 try
                 {
                     using var entityCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -150,29 +183,47 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
                     if (meta is not null)
                     {
                         _registry.Upsert(meta);
+                        _failedDiscoveryUtc.TryRemove(name, out _);
+                        _logger.LogInformation(
+                            "Dynamics metadata discovered for {Entity}: attributes={AttrCount}, relationships={RelCount}, liveVerified={LiveVerified}",
+                            name,
+                            meta.Attributes.Count,
+                            meta.Relationships.Count,
+                            meta.IsLiveVerified);
+                    }
+                    else
+                    {
+                        RememberDiscoveryFailure(name);
+                        _logger.LogWarning(
+                            "Dynamics metadata discovery returned no usable schema for {Entity}; cache entry not created.",
+                            name);
                     }
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
-                    _logger.LogWarning("Metadata discovery timed out for {Entity}; keeping seed/stub.", name);
-                    UpsertFallbackMetadata(name);
+                    RememberDiscoveryFailure(name);
+                    _logger.LogWarning("Metadata discovery timed out for {Entity}; no fabricated fallback cached.", name);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Metadata discovery failed for {Entity}; using seed/stub if available.", name);
-                    UpsertFallbackMetadata(name);
-                }
-
-                if (!_registry.TryGet(name, out _) && _policy.IsApproved(name))
-                {
-                    UpsertFallbackMetadata(name);
+                    RememberDiscoveryFailure(name);
+                    _logger.LogWarning(ex, "Metadata discovery failed for {Entity}; no fabricated fallback cached.", name);
                 }
             }
 
             if (string.IsNullOrWhiteSpace(logicalName))
             {
-                _liveDiscoveryCompleted = true;
+                _fullRefreshAttempted = true;
                 _lastFullLoadUtc = DateTimeOffset.UtcNow;
+                var liveNames = _registry.GetApproved().Select(e => e.LogicalName).ToArray();
+                var missing = _policy.ApprovedLogicalNames
+                    .Where(n => !liveNames.Contains(n, StringComparer.OrdinalIgnoreCase))
+                    .ToArray();
+                _logger.LogInformation(
+                    "Dynamics metadata full refresh finished. LiveCached={LiveCount}/{ApprovedCount}. Missing=[{Missing}]",
+                    liveNames.Length,
+                    _policy.ApprovedLogicalNames.Count,
+                    missing.Length == 0 ? "(none)" : string.Join(", ", missing));
             }
         }
         finally
@@ -181,51 +232,17 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
         }
     }
 
-    /// <summary>
-    /// Ensures approved entities exist in the registry immediately (no CRM HTTP).
-    /// Does not mark live discovery complete — warm-up still overlays Dynamics metadata.
-    /// </summary>
-    private void EnsureSeedsPresent()
-    {
-        if (_registry.GetApproved().Count >= _policy.ApprovedLogicalNames.Count &&
-            _policy.ApprovedLogicalNames.All(n => _registry.TryGet(n, out _)))
-        {
-            return;
-        }
+    private bool IsLiveCached(string logicalName) =>
+        _registry.TryGet(logicalName, out var entity) &&
+        entity.Provenance == CrmMetadataProvenance.Live &&
+        entity.Attributes.Count > 0;
 
-        foreach (var entity in StaticSeedCrmMetadata.CreateApprovedSeeds(_policy))
-        {
-            if (!_registry.TryGet(entity.LogicalName, out _))
-            {
-                _registry.Upsert(entity);
-            }
-        }
+    private bool IsInFailureCooldown(string logicalName) =>
+        _failedDiscoveryUtc.TryGetValue(logicalName, out var at) &&
+        DateTimeOffset.UtcNow - at < DiscoveryFailureCooldown;
 
-        foreach (var approved in _policy.ApprovedLogicalNames)
-        {
-            if (!_registry.TryGet(approved, out _))
-            {
-                UpsertFallbackMetadata(approved);
-            }
-        }
-    }
-
-    private void UpsertFallbackMetadata(string logicalName)
-    {
-        var seed = StaticSeedCrmMetadata.CreateApprovedSeeds(_policy)
-            .FirstOrDefault(e => e.LogicalName.Equals(logicalName, StringComparison.OrdinalIgnoreCase));
-        if (seed is not null)
-        {
-            _registry.Upsert(seed);
-            return;
-        }
-
-        if (_policy.IsApproved(logicalName))
-        {
-            // Config-only entity: no entity-specific C# — generic stub until live discovery succeeds.
-            _registry.Upsert(GenericApprovedEntityStubFactory.Create(logicalName, _policy));
-        }
-    }
+    private void RememberDiscoveryFailure(string logicalName) =>
+        _failedDiscoveryUtc[logicalName] = DateTimeOffset.UtcNow;
 
     private async Task<CrmEntityMetadata?> DiscoverEntityAsync(string logicalName, CancellationToken cancellationToken)
     {
@@ -254,11 +271,25 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
             "?$select=LogicalName,AttributeType,SchemaName,DisplayName,IsValidForRead,IsCustomAttribute,IsValidForGrid" +
             "&$filter=IsValidForRead eq true";
         var attrsHttp = await _http.GetAsync(attrsPath, cancellationToken);
-        var attributes = attrsHttp.IsSuccess ? ParseAttributes(attrsHttp.Body) : [];
+        if (!attrsHttp.IsSuccess)
+        {
+            _logger.LogWarning(
+                "Attributes discovery failed for {Entity}: {Status}",
+                logicalName,
+                attrsHttp.StatusCode);
+            return null;
+        }
+
+        var attributes = ParseAttributes(attrsHttp.Body);
+        if (attributes.Count == 0)
+        {
+            _logger.LogWarning("Attributes discovery returned no usable attributes for {Entity}.", logicalName);
+            return null;
+        }
 
         await EnrichOptionSetsAsync(logicalName, attributes, cancellationToken);
 
-        var seedRelationships = _registry.TryGet(logicalName, out var existing)
+        var previousRelationships = _registry.TryGet(logicalName, out var existing)
             ? existing.Relationships
             : Array.Empty<CrmRelationshipMetadata>();
 
@@ -267,14 +298,14 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
         var liveRelationshipsOk = false;
         try
         {
-            relationships = await DiscoverRelationshipsAsync(logicalName, seedRelationships, cancellationToken);
+            relationships = await DiscoverRelationshipsAsync(logicalName, previousRelationships, cancellationToken);
             liveRelationshipsOk = true;
         }
         catch (Exception ex)
         {
-            discoveryError = "Relationship discovery failed; using seed fallback.";
-            _logger.LogWarning(ex, "Relationship discovery failed for {Entity}; keeping seed relationships.", logicalName);
-            relationships = MergeRelationships(seedRelationships, Array.Empty<CrmRelationshipMetadata>(), liveSucceeded: false);
+            discoveryError = "Relationship discovery failed; entity attributes were still loaded from Dynamics.";
+            _logger.LogWarning(ex, "Relationship discovery failed for {Entity}; keeping previously cached live relationships if any.", logicalName);
+            relationships = MergeRelationships(previousRelationships, Array.Empty<CrmRelationshipMetadata>(), liveSucceeded: false);
         }
 
         relationships = EnrichRelationshipLabels(relationships, attributes);
@@ -304,29 +335,32 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
     /// </summary>
     private async Task<IReadOnlyList<CrmRelationshipMetadata>> DiscoverRelationshipsAsync(
         string logicalName,
-        IReadOnlyList<CrmRelationshipMetadata> seedRelationships,
+        IReadOnlyList<CrmRelationshipMetadata> previousRelationships,
         CancellationToken cancellationToken)
     {
         // Unfiltered relationship collections on Dynamics On-Prem are huge and can hang chat.
-        // Bound discovery tightly and keep seeds as the safe fallback.
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromSeconds(8));
 
         try
         {
             var discovered = new List<CrmRelationshipMetadata>();
-            var approvedFilter = BuildApprovedEntityODataFilter();
+            // Collection navigation is already scoped to this entity. Filter only the opposite
+            // endpoint so the OData predicate depth stays under Dynamics' limit of 25.
+            // (A dual-role OR per approved entity exceeds that limit at 13+ approved entities.)
+            var manyToOneFilter = BuildApprovedEntityODataFilter(oppositeEndpointProperty: "ReferencedEntity");
+            var oneToManyFilter = BuildApprovedEntityODataFilter(oppositeEndpointProperty: "ReferencingEntity");
 
             var manyToOnePath =
                 $"EntityDefinitions(LogicalName='{Escape(logicalName)}')/ManyToOneRelationships" +
                 "?$select=SchemaName,ReferencingEntity,ReferencedEntity,ReferencingAttribute,ReferencedAttribute," +
                 "ReferencingEntityNavigationPropertyName,ReferencedEntityNavigationPropertyName" +
-                approvedFilter;
+                manyToOneFilter;
             var oneToManyPath =
                 $"EntityDefinitions(LogicalName='{Escape(logicalName)}')/OneToManyRelationships" +
                 "?$select=SchemaName,ReferencingEntity,ReferencedEntity,ReferencingAttribute,ReferencedAttribute," +
                 "ReferencingEntityNavigationPropertyName,ReferencedEntityNavigationPropertyName" +
-                approvedFilter;
+                oneToManyFilter;
             // Skip ManyToMany live GET — unsupported for joins and often the largest payload.
 
             var m2o = await _http.GetAsync(manyToOnePath, cts.Token);
@@ -334,30 +368,47 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
             {
                 discovered.AddRange(ParseLookupRelationships(m2o.Body, CrmRelationshipKind.ManyToOne));
             }
+            else
+            {
+                _logger.LogWarning(
+                    "ManyToOneRelationships failed for {Entity}: Status={Status}",
+                    logicalName,
+                    m2o.StatusCode);
+            }
 
             var o2m = await _http.GetAsync(oneToManyPath, cts.Token);
             if (o2m.IsSuccess)
             {
                 discovered.AddRange(ParseLookupRelationships(o2m.Body, CrmRelationshipKind.OneToMany));
             }
+            else
+            {
+                _logger.LogWarning(
+                    "OneToManyRelationships failed for {Entity}: Status={Status}",
+                    logicalName,
+                    o2m.StatusCode);
+            }
 
-            return MergeRelationships(seedRelationships, discovered, liveSucceeded: true);
+            // Only treat discovery as live-succeeded when at least one collection GET worked.
+            // Otherwise keep previously cached live relationships instead of wiping them.
+            var liveSucceeded = m2o.IsSuccess || o2m.IsSuccess;
+            return MergeRelationships(previousRelationships, discovered, liveSucceeded);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogWarning(
-                "Relationship discovery timed out for {Entity}; using seed relationships only.",
+                "Relationship discovery timed out for {Entity}; keeping previously cached live relationships if any.",
                 logicalName);
-            return MergeRelationships(seedRelationships, Array.Empty<CrmRelationshipMetadata>(), liveSucceeded: false);
+            return MergeRelationships(previousRelationships, Array.Empty<CrmRelationshipMetadata>(), liveSucceeded: false);
         }
     }
 
     /// <summary>
-    /// Limits relationship GETs to rows touching at least one approved entity (On-Prem safe filter).
+    /// Limits relationship GETs to rows whose opposite endpoint is an approved entity.
+    /// Dynamics EntityRelationship queries reject filters deeper than 25 predicates.
     /// </summary>
-    private string BuildApprovedEntityODataFilter()
+    private string BuildApprovedEntityODataFilter(string oppositeEndpointProperty)
     {
-        // POC: include every approved entity in the relationship OData filter (no Take cap).
         var names = _policy.ApprovedLogicalNames
             .Where(n => !string.IsNullOrWhiteSpace(n))
             .Select(n => n.Trim())
@@ -368,83 +419,40 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
             return string.Empty;
         }
 
-        var parts = names.SelectMany(n =>
+        // Dynamics error 0x80044183: max supported filter depth is 25. Fall back to an
+        // unfiltered collection GET; ParseLookupRelationships still drops non-approved endpoints.
+        const int maxDynamicsRelationshipFilterDepth = 25;
+        if (names.Length >= maxDynamicsRelationshipFilterDepth)
         {
-            var lit = Escape(n);
-            return new[]
-            {
-                $"ReferencingEntity eq '{lit}'",
-                $"ReferencedEntity eq '{lit}'"
-            };
-        });
+            _logger.LogWarning(
+                "Approved entity count {Count} reaches Dynamics relationship filter depth limit {Limit}; " +
+                "requesting unfiltered {Property} collection and filtering client-side.",
+                names.Length,
+                maxDynamicsRelationshipFilterDepth,
+                oppositeEndpointProperty);
+            return string.Empty;
+        }
+
+        var parts = names.Select(n => $"{oppositeEndpointProperty} eq '{Escape(n)}'");
         return "&$filter=" + Uri.EscapeDataString(string.Join(" or ", parts));
     }
 
     private IReadOnlyList<CrmRelationshipMetadata> MergeRelationships(
-        IReadOnlyList<CrmRelationshipMetadata> seeds,
+        IReadOnlyList<CrmRelationshipMetadata> previous,
         IReadOnlyList<CrmRelationshipMetadata> discovered,
         bool liveSucceeded)
     {
+        if (!liveSucceeded)
+        {
+            // Keep previously cached live relationships only — never invent schema.
+            return previous
+                .Where(r => r.Provenance == CrmMetadataProvenance.Live)
+                .OrderByDescending(r => r.IsApproved)
+                .ThenBy(r => r.SchemaName, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
         var bySchema = new Dictionary<string, CrmRelationshipMetadata>(StringComparer.OrdinalIgnoreCase);
-        var liveSchemas = new HashSet<string>(
-            discovered.Select(d => d.SchemaName),
-            StringComparer.OrdinalIgnoreCase);
-
-        CrmRelationshipMetadata Materialize(CrmRelationshipMetadata rel, bool fromLive)
-        {
-            var policyOk = rel.Kind != CrmRelationshipKind.ManyToMany &&
-                           _policy.IsRelationshipApproved(rel.SchemaName, rel.ReferencingEntity, rel.ReferencedEntity);
-
-            // When live discovery succeeded, only live-present relationships are authoritative/joinable.
-            // Seed-only leftovers remain visible but not approved (unless live failed → SeedFallback).
-            var approved = liveSucceeded
-                ? fromLive && policyOk
-                : policyOk && (rel.IsApproved || fromLive);
-
-            string? configuredLabel = null;
-            if (_options.RelationshipLabels is not null &&
-                _options.RelationshipLabels.TryGetValue(rel.SchemaName, out var lbl))
-            {
-                configuredLabel = lbl;
-            }
-
-            return new CrmRelationshipMetadata
-            {
-                SchemaName = rel.SchemaName,
-                Kind = rel.Kind,
-                ReferencingEntity = rel.ReferencingEntity,
-                ReferencedEntity = rel.ReferencedEntity,
-                ReferencingAttribute = rel.ReferencingAttribute,
-                ReferencedAttribute = rel.ReferencedAttribute,
-                ReferencingEntityNavigationPropertyName = rel.ReferencingEntityNavigationPropertyName,
-                ReferencedEntityNavigationPropertyName = rel.ReferencedEntityNavigationPropertyName,
-                ReferencingAttributeDisplayName = rel.ReferencingAttributeDisplayName,
-                BusinessLabel = Prefer(rel.BusinessLabel, configuredLabel),
-                IsApproved = approved,
-                Provenance = fromLive
-                    ? CrmMetadataProvenance.Live
-                    : liveSucceeded
-                        ? CrmMetadataProvenance.Seed
-                        : CrmMetadataProvenance.SeedFallback
-            };
-        }
-
-        foreach (var seed in seeds)
-        {
-            if (string.IsNullOrWhiteSpace(seed.SchemaName))
-            {
-                continue;
-            }
-
-            // If live succeeded and this schema was also discovered, skip seed — live wins below.
-            if (liveSucceeded && liveSchemas.Contains(seed.SchemaName))
-            {
-                continue;
-            }
-
-            bySchema[seed.SchemaName] = Materialize(seed, fromLive: false);
-        }
-
         foreach (var live in discovered)
         {
             if (string.IsNullOrWhiteSpace(live.SchemaName))
@@ -452,35 +460,35 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
                 continue;
             }
 
-            var next = Materialize(live, fromLive: true);
-            if (bySchema.TryGetValue(next.SchemaName, out var existing))
+            var policyOk = live.Kind != CrmRelationshipKind.ManyToMany &&
+                           _policy.IsRelationshipApproved(live.SchemaName, live.ReferencingEntity, live.ReferencedEntity);
+
+            string? configuredLabel = null;
+            if (_options.RelationshipLabels is not null &&
+                _options.RelationshipLabels.TryGetValue(live.SchemaName, out var lbl))
             {
-                bySchema[next.SchemaName] = new CrmRelationshipMetadata
-                {
-                    SchemaName = next.SchemaName,
-                    Kind = next.Kind != default ? next.Kind : existing.Kind,
-                    ReferencingEntity = Prefer(next.ReferencingEntity, existing.ReferencingEntity),
-                    ReferencedEntity = Prefer(next.ReferencedEntity, existing.ReferencedEntity),
-                    ReferencingAttribute = Prefer(next.ReferencingAttribute, existing.ReferencingAttribute),
-                    ReferencedAttribute = Prefer(next.ReferencedAttribute, existing.ReferencedAttribute),
-                    ReferencingEntityNavigationPropertyName = Prefer(
-                        next.ReferencingEntityNavigationPropertyName,
-                        existing.ReferencingEntityNavigationPropertyName),
-                    ReferencedEntityNavigationPropertyName = Prefer(
-                        next.ReferencedEntityNavigationPropertyName,
-                        existing.ReferencedEntityNavigationPropertyName),
-                    ReferencingAttributeDisplayName = Prefer(
-                        next.ReferencingAttributeDisplayName,
-                        existing.ReferencingAttributeDisplayName),
-                    BusinessLabel = Prefer(next.BusinessLabel, existing.BusinessLabel),
-                    IsApproved = next.IsApproved,
-                    Provenance = CrmMetadataProvenance.Live
-                };
+                configuredLabel = lbl;
             }
-            else
+
+            bySchema[live.SchemaName] = new CrmRelationshipMetadata
             {
-                bySchema[next.SchemaName] = next;
-            }
+                SchemaName = live.SchemaName,
+                Kind = live.Kind,
+                ReferencingEntity = live.ReferencingEntity,
+                ReferencedEntity = live.ReferencedEntity,
+                ReferencingAttribute = live.ReferencingAttribute,
+                ReferencedAttribute = live.ReferencedAttribute,
+                ReferencingEntityNavigationPropertyName = live.ReferencingEntityNavigationPropertyName,
+                ReferencedEntityNavigationPropertyName = live.ReferencedEntityNavigationPropertyName,
+                ReferencingAttributeDisplayName = Prefer(
+                    live.ReferencingAttributeDisplayName,
+                    previous.FirstOrDefault(p =>
+                        p.SchemaName.Equals(live.SchemaName, StringComparison.OrdinalIgnoreCase))
+                        ?.ReferencingAttributeDisplayName),
+                BusinessLabel = Prefer(live.BusinessLabel, configuredLabel),
+                IsApproved = policyOk,
+                Provenance = CrmMetadataProvenance.Live
+            };
         }
 
         return bySchema.Values
@@ -700,6 +708,16 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
             }
         }
     }
+
+    /// <summary>
+    /// Prefer English (1033) LocalizedLabels, then UserLocalizedLabel; otherwise null
+    /// (callers fall back to LogicalName for table headers).
+    /// </summary>
+    internal static string? GetLocalizedLabelForTests(JsonElement el, string propertyName) =>
+        GetLocalizedLabel(el, propertyName);
+
+    internal static List<CrmAttributeMetadata> ParseAttributesForTests(string json) =>
+        ParseAttributes(json);
 
     private static List<CrmAttributeMetadata> ParseAttributes(string json)
     {

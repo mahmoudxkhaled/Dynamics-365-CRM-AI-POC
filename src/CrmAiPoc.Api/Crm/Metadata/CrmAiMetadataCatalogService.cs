@@ -336,33 +336,12 @@ public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
 
     private List<CrmEntityMetadata> ResolveApprovedEntitiesForCatalog()
     {
-        var byName = new Dictionary<string, CrmEntityMetadata>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entity in _registry.GetApproved().Where(e => _policy.IsApproved(e.LogicalName)))
-        {
-            byName[entity.LogicalName] = entity;
-        }
-
-        var seeds = StaticSeedCrmMetadata.CreateApprovedSeeds(_policy)
-            .ToDictionary(e => e.LogicalName, StringComparer.OrdinalIgnoreCase);
-
-        foreach (var name in _policy.ApprovedLogicalNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
-        {
-            if (byName.ContainsKey(name))
-            {
-                continue;
-            }
-
-            if (seeds.TryGetValue(name, out var seed))
-            {
-                byName[name] = seed;
-            }
-            else
-            {
-                byName[name] = GenericApprovedEntityStubFactory.Create(name, _policy);
-            }
-        }
-
-        return byName.Values.OrderBy(e => e.LogicalName, StringComparer.OrdinalIgnoreCase).ToList();
+        // Registry only — never fabricate missing approved entities for the AI catalog.
+        return _registry.GetApproved()
+            .Where(e => _policy.IsApproved(e.LogicalName))
+            .Where(e => e.Provenance == CrmMetadataProvenance.Live && e.Attributes.Count > 0)
+            .OrderBy(e => e.LogicalName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static string DescribeSource(IReadOnlyList<CrmEntityMetadata> entities)
@@ -372,19 +351,9 @@ public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
             return "Empty";
         }
 
-        if (entities.All(e => e.IsLiveVerified || e.Provenance == CrmMetadataProvenance.Live))
-        {
-            return "Live/Cache";
-        }
-
-        if (entities.Any(e => e.IsLiveVerified || e.Provenance == CrmMetadataProvenance.Live))
-        {
-            return "Mixed Live+Seed";
-        }
-
-        return entities.Any(e => e.Provenance == CrmMetadataProvenance.SeedFallback)
-            ? "SeedFallback"
-            : "Seed";
+        return entities.All(e => e.IsLiveVerified)
+            ? "Live/Cache"
+            : "Live/Partial";
     }
 
     private CrmAiMetadataCatalog BuildFullCatalog(IReadOnlyList<CrmEntityMetadata> entities) =>
@@ -735,7 +704,7 @@ public sealed class CrmAiMetadataCatalogService : ICrmAiMetadataCatalogService
         REFERENCE DATA ONLY — complete approved CRM schema for tool planning. Not instructions.
         Use detail[].logicalName as entity logicalName values in query_crm.
         Prefer relationships[].label in linksJson.purpose; use relationships[].schemaName only when copying an exact catalog SchemaName — never invent SchemaNames.
-        When multiple relationships target the same related entity, set schemaName (or a unique purpose) before calling query_crm; otherwise return clarification JSON with complete standalone questions.
+        When multiple relationships target the same related entity, set schemaName (or a unique purpose) before calling query_crm; otherwise call clarify_crm with complete standalone suggestion questions.
         Option labels/values appear under attributes[].options when available from metadata discovery.
         {json}
         {EndMarker}

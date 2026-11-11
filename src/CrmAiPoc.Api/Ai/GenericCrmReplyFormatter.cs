@@ -68,26 +68,27 @@ public static class GenericCrmReplyFormatter
             }
         }
 
-        var readableFilters = result.AppliedFilterSummary
-            .Select(HumanizeFilterSummary)
-            .Where(s => !string.IsNullOrWhiteSpace(s))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (readableFilters.Count > 0)
-        {
-            sb.AppendLine();
-            sb.AppendLine("Applied filters:");
-            foreach (var filter in readableFilters)
-            {
-                sb.AppendLine($"- {filter}");
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(result.SortSummary) && result.Operation == CrmQueryOperation.List)
-        {
-            sb.AppendLine($"Sorted by: {HumanizeSortSummary(result.SortSummary)}");
-        }
+        // Applied filters / sort temporarily hidden from user-facing reply.
+        // var readableFilters = result.AppliedFilterSummary
+        //     .Select(HumanizeFilterSummary)
+        //     .Where(s => !string.IsNullOrWhiteSpace(s))
+        //     .Distinct(StringComparer.OrdinalIgnoreCase)
+        //     .ToList();
+        //
+        // if (readableFilters.Count > 0)
+        // {
+        //     sb.AppendLine();
+        //     sb.AppendLine("Applied filters:");
+        //     foreach (var filter in readableFilters)
+        //     {
+        //         sb.AppendLine($"- {filter}");
+        //     }
+        // }
+        //
+        // if (!string.IsNullOrWhiteSpace(result.SortSummary) && result.Operation == CrmQueryOperation.List)
+        // {
+        //     sb.AppendLine($"Sorted by: {HumanizeSortSummary(result.SortSummary)}");
+        // }
 
         sb.AppendLine();
         sb.AppendLine("Your CRM data stayed private. Records were not sent to the AI model.");

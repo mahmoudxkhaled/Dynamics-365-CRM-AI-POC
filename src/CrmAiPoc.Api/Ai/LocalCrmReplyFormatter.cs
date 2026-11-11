@@ -14,6 +14,6 @@ public static class LocalCrmReplyFormatter
             return modelText.Trim();
         }
 
-        return "I can only help with approved read-only CRM queries via query_crm.";
+        return "I can only help with approved read-only CRM queries via query_crm or clarify_crm.";
     }
 }

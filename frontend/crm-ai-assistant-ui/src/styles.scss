@@ -119,10 +119,22 @@ body {
   background: var(--crm-surface);
 }
 
+.page-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
 .page-header-main {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+}
+
+.page-header-text {
   min-width: 0;
 }
 
@@ -144,10 +156,34 @@ body {
 }
 
 .page-header-meta {
-  margin: 2px 0 0 26px;
+  margin: 2px 0 0;
   font-size: 12px;
   line-height: 16px;
   color: var(--crm-text-secondary);
+}
+
+.new-chat-btn {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 2px;
+  border: 1px solid var(--crm-border-strong);
+  background: var(--crm-surface);
+  color: var(--crm-text);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.new-chat-btn:hover {
+  background: var(--crm-surface-hover);
+  border-color: var(--crm-text-secondary);
+}
+
+.new-chat-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--crm-focus);
 }
 
 .workspace {
@@ -384,11 +420,11 @@ table.crm-table td.col-empty {
 
 .composer form {
   display: flex;
-  align-items: stretch;
+  align-items: flex-end;
   gap: 8px;
 }
 
-.composer input[type='text'] {
+.composer textarea {
   flex: 1;
   min-width: 0;
   padding: 7px 10px;
@@ -401,26 +437,29 @@ table.crm-table td.col-empty {
   direction: ltr;
   text-align: left;
   unicode-bidi: plaintext;
-  height: 32px;
+  min-height: 32px;
+  max-height: 120px;
+  line-height: 1.4;
+  resize: none;
   transition: border-color 0.1s ease;
 }
 
-.composer input[type='text']:hover:not(:disabled) {
+.composer textarea:hover:not(:disabled) {
   border-color: var(--crm-text-secondary);
 }
 
-.composer input[type='text']:focus {
+.composer textarea:focus {
   outline: none;
   border-color: var(--crm-blue);
 }
 
-.composer input[type='text']:disabled {
+.composer textarea:disabled {
   background: var(--crm-surface-hover);
   color: var(--crm-text-disabled);
   cursor: wait;
 }
 
-.composer input[type='text']::placeholder {
+.composer textarea::placeholder {
   color: var(--crm-text-disabled);
 }
 
@@ -482,9 +521,6 @@ button.send.is-cooldown {
     line-height: 24px;
   }
 
-  .page-header-meta {
-    margin-left: 26px;
-  }
 
   .chat {
     padding: 10px 12px;
@@ -502,6 +538,7 @@ button.send.is-cooldown {
 
   .composer form {
     flex-direction: column;
+    align-items: stretch;
   }
 
   button.send {

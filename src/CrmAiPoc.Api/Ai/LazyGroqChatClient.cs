@@ -31,14 +31,17 @@ public sealed class LazyGroqChatClient : IChatClient
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
         CancellationToken cancellationToken = default) =>
-        GetInner().GetResponseAsync(messages, options, cancellationToken);
+        GetInner().GetResponseAsync(messages, ApplyGroqChatOptions(options), cancellationToken);
 
     public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        await foreach (var update in GetInner().GetStreamingResponseAsync(messages, options, cancellationToken))
+        await foreach (var update in GetInner().GetStreamingResponseAsync(
+                           messages,
+                           ApplyGroqChatOptions(options),
+                           cancellationToken))
         {
             yield return update;
         }
@@ -73,9 +76,7 @@ public sealed class LazyGroqChatClient : IChatClient
                     "Groq API key is missing. Set Groq:ApiKey in appsettings or environment variable GROQ_API_KEY.");
             }
 
-            var model = string.IsNullOrWhiteSpace(options.ModelName)
-                ? "openai/gpt-oss-120b"
-                : options.ModelName;
+            var model = options.ResolveModel();
 
             var baseUrl = string.IsNullOrWhiteSpace(options.BaseUrl)
                 ? "https://api.groq.com/openai/v1"
@@ -96,10 +97,13 @@ public sealed class LazyGroqChatClient : IChatClient
                 });
 
             _logger.LogInformation(
-                "[GROQ CLIENT] Endpoint={Endpoint} Model={Model} SdkMaxRetries={SdkMaxRetries} " +
+                "[GROQ CLIENT] Endpoint={Endpoint} Model={Model} ReasoningEffort={ReasoningEffort} " +
+                "Temperature={Temperature} SdkMaxRetries={SdkMaxRetries} " +
                 "Note=SDK internal retries disabled; ChatService owns timeout and transient retry policy.",
                 baseUrl,
                 model,
+                options.ReasoningEffort,
+                options.Temperature,
                 sdkMaxRetries);
 
             // Raw client (no UseFunctionInvocation). ChatService executes tools locally
@@ -111,4 +115,42 @@ public sealed class LazyGroqChatClient : IChatClient
             return _inner;
         }
     }
+
+    /// <summary>
+    /// Applies configured Groq temperature and reasoning_effort onto every chat request.
+    /// </summary>
+    private ChatOptions ApplyGroqChatOptions(ChatOptions? options)
+    {
+        var configured = _options.Value;
+        var merged = options is null ? new ChatOptions() : options.Clone();
+        merged.Temperature = configured.Temperature;
+
+        var effort = ParseReasoningEffort(configured.ReasoningEffort);
+        if (effort is not null)
+        {
+            merged.Reasoning ??= new ReasoningOptions();
+            merged.Reasoning.Effort = effort;
+        }
+
+        return merged;
+    }
+
+    private static ReasoningEffort? ParseReasoningEffort(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return ReasoningEffort.Medium;
+        }
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "none" => ReasoningEffort.None,
+            "low" or "minimal" => ReasoningEffort.Low,
+            "medium" or "default" => ReasoningEffort.Medium,
+            "high" => ReasoningEffort.High,
+            "xhigh" or "extra_high" or "extrahigh" or "max" => ReasoningEffort.ExtraHigh,
+            _ => ReasoningEffort.Medium
+        };
+    }
 }
+

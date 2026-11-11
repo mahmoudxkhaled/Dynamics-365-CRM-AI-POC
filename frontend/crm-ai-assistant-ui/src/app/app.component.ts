@@ -1,4 +1,5 @@
 import { Component, OnInit } from '@angular/core';
+import { ChatSessionService } from './core/services/chat-session.service';
 import { CrmContextService } from './core/services/crm-context.service';
 
 @Component({
@@ -8,7 +9,10 @@ import { CrmContextService } from './core/services/crm-context.service';
   standalone: false
 })
 export class AppComponent implements OnInit {
-  constructor(private readonly crmContext: CrmContextService) {}
+  constructor(
+    private readonly crmContext: CrmContextService,
+    private readonly chatSession: ChatSessionService
+  ) {}
 
   ngOnInit(): void {
     // Production-only: confirm CRM iframe context (no-op in local dev).
@@ -19,5 +23,9 @@ export class AppComponent implements OnInit {
         this.crmContext.context.userName
       );
     }
+  }
+
+  onNewChat(): void {
+    this.chatSession.requestNewChat();
   }
 }

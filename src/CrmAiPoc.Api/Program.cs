@@ -55,9 +55,17 @@ builder.Services.Configure<GroqOptions>(options =>
         builder.Configuration["GroqApiKey"],
         Environment.GetEnvironmentVariable("GROQ_API_KEY"),
         Environment.GetEnvironmentVariable("GroqApiKey")) ?? options.ApiKey;
+    options.Model = FirstNonEmpty(
+        builder.Configuration["Groq:Model"],
+        builder.Configuration["Groq:ModelName"],
+        Environment.GetEnvironmentVariable("GROQ_MODEL")) ?? options.Model;
     options.ModelName = FirstNonEmpty(
+        options.Model,
         builder.Configuration["Groq:ModelName"],
         Environment.GetEnvironmentVariable("GROQ_MODEL")) ?? options.ModelName;
+    options.ReasoningEffort = FirstNonEmpty(
+        builder.Configuration["Groq:ReasoningEffort"],
+        Environment.GetEnvironmentVariable("GROQ_REASONING_EFFORT")) ?? options.ReasoningEffort;
     options.BaseUrl = FirstNonEmpty(
         builder.Configuration["Groq:BaseUrl"],
         Environment.GetEnvironmentVariable("GROQ_BASE_URL")) ?? options.BaseUrl;
@@ -116,7 +124,7 @@ builder.Services.AddSwaggerGen(c =>
     {
         Title = "CRM AI POC API",
         Version = "v1",
-        Description = "Read-only Dynamics 365 CRM assistant POC. AI via Ai:Provider; CRM data via Crm:Provider=Mock|Dynamics365 (generic query engine)."
+        Description = "Read-only Dynamics 365 CRM assistant POC. AI via Ai:Provider; CRM data via live Dynamics 365 only."
     });
 });
 
@@ -146,8 +154,7 @@ builder.Services.AddSingleton<IOllamaEmbeddingClient, OllamaEmbeddingClient>();
 builder.Services.AddSingleton<InMemorySemanticMetadataIndex>();
 builder.Services.AddSingleton<ISemanticCrmMetadataRetriever, SemanticCrmMetadataRetriever>();
 
-// Dynamics HTTP is always registered so connectivity can be tested
-// without permanently switching Crm:Provider (calls still require EnableLiveIntegration + BaseUrl).
+// Dynamics HTTP client (Windows auth / configured credentials). Live CRM is required.
 builder.Services.AddHttpClient(DynamicsCrmHttp.HttpClientName, (sp, client) =>
     {
         var opts = sp.GetRequiredService<IOptions<CrmOptions>>().Value;
@@ -168,25 +175,23 @@ builder.Services.AddSingleton<DynamicsCrmHttp>();
 builder.Services.AddSingleton<DynamicsConnectivityService>();
 
 var crmOptions = builder.Configuration.GetSection(CrmOptions.SectionName).Get<CrmOptions>() ?? new CrmOptions();
-var crmProviderName = (crmOptions.Provider ?? "Mock").Trim();
+var crmProviderName = (crmOptions.Provider ?? "Dynamics365").Trim();
 
-if (crmOptions.IsDynamicsProvider)
+if (!crmOptions.IsDynamicsProvider)
 {
-    if (!crmOptions.EnableLiveIntegration || string.IsNullOrWhiteSpace(crmOptions.BaseUrl))
-    {
-        throw new InvalidOperationException(
-            "Crm:Provider=Dynamics365 requires Crm:EnableLiveIntegration=true and Crm:BaseUrl. " +
-            "Use Crm:Provider=Mock for local POC without live CRM.");
-    }
+    throw new InvalidOperationException(
+        $"Crm:Provider='{crmProviderName}' is not supported. This POC uses live Dynamics 365 only " +
+        "(set Crm:Provider=Dynamics365, Crm:EnableLiveIntegration=true, and Crm:BaseUrl).");
+}
 
-    builder.Services.AddSingleton<ICrmMetadataService, DynamicsCrmMetadataService>();
-    builder.Services.AddSingleton<IGenericCrmRepository, DynamicsGenericCrmRepository>();
-}
-else
+if (!crmOptions.EnableLiveIntegration || string.IsNullOrWhiteSpace(crmOptions.BaseUrl))
 {
-    builder.Services.AddSingleton<ICrmMetadataService, MockCrmMetadataService>();
-    builder.Services.AddSingleton<IGenericCrmRepository, MockGenericCrmRepository>();
+    throw new InvalidOperationException(
+        "Dynamics 365 requires Crm:EnableLiveIntegration=true and Crm:BaseUrl.");
 }
+
+builder.Services.AddSingleton<ICrmMetadataService, DynamicsCrmMetadataService>();
+builder.Services.AddSingleton<IGenericCrmRepository, DynamicsGenericCrmRepository>();
 
 // Warm approved CRM metadata after the host starts (does not block Kestrel listen).
 builder.Services.AddHostedService<CrmMetadataWarmupHostedService>();
@@ -234,7 +239,9 @@ var aiModel = aiProvider switch
         => builder.Configuration["OpenAI:ModelName"] ?? "gpt-4o-mini",
     var p when p.Equals("Gemini", StringComparison.OrdinalIgnoreCase)
         => builder.Configuration["Gemini:ModelName"] ?? "gemini-3.8-flash",
-    _ => builder.Configuration["Groq:ModelName"] ?? "openai/gpt-oss-120b"
+    _ => builder.Configuration["Groq:Model"]
+         ?? builder.Configuration["Groq:ModelName"]
+         ?? "openai/gpt-oss-120b"
 };
 
 app.Logger.LogInformation(

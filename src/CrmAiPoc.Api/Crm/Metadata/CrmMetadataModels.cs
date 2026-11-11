@@ -29,12 +29,8 @@ public enum CrmRelationshipKind
 
 public enum CrmMetadataProvenance
 {
-    /// <summary>Static seed / stub — not verified against live CRM in this process.</summary>
-    Seed = 0,
-    /// <summary>Loaded or merged from live Dynamics metadata.</summary>
-    Live = 1,
-    /// <summary>Seed retained after a live discovery failure/timeout.</summary>
-    SeedFallback = 2
+    /// <summary>Loaded from live Dynamics EntityDefinitions.</summary>
+    Live = 1
 }
 
 public sealed class CrmEntityMetadata
@@ -49,10 +45,10 @@ public sealed class CrmEntityMetadata
     public IReadOnlyList<CrmAttributeMetadata> Attributes { get; init; } = Array.Empty<CrmAttributeMetadata>();
     public IReadOnlyList<CrmRelationshipMetadata> Relationships { get; init; } = Array.Empty<CrmRelationshipMetadata>();
     public DateTimeOffset DiscoveredAtUtc { get; init; } = DateTimeOffset.UtcNow;
-    public CrmMetadataProvenance Provenance { get; init; } = CrmMetadataProvenance.Seed;
-    /// <summary>True when attributes/relationships were refreshed from live CRM successfully.</summary>
+    public CrmMetadataProvenance Provenance { get; init; } = CrmMetadataProvenance.Live;
+    /// <summary>True when attributes and relationships were loaded successfully from Dynamics.</summary>
     public bool IsLiveVerified { get; init; }
-    /// <summary>Last live discovery error (sanitized); null when OK or seeds-only.</summary>
+    /// <summary>Last live discovery error (sanitized); null when OK.</summary>
     public string? DiscoveryError { get; init; }
 
     public bool TryGetAttribute(string nameOrAlias, out CrmAttributeMetadata attribute)
@@ -115,7 +111,7 @@ public sealed class CrmRelationshipMetadata
     public string? ReferencingAttributeDisplayName { get; init; }
     /// <summary>Optional business label from config (Crm:RelationshipLabels).</summary>
     public string? BusinessLabel { get; init; }
-    public CrmMetadataProvenance Provenance { get; init; } = CrmMetadataProvenance.Seed;
+    public CrmMetadataProvenance Provenance { get; init; } = CrmMetadataProvenance.Live;
 }
 
 public enum CrmFilterOperator

@@ -7,8 +7,8 @@ namespace CrmAiPoc.Api.Ai;
 
 /// <summary>
 /// Approved read-only CRM tools exposed to the AI model via Microsoft.Extensions.AI.
-/// Production chat exposes only <see cref="query_crm"/>; ChatService executes the validated plan locally
-/// and never returns CRM rows to the model.
+/// Production chat exposes <see cref="query_crm"/> and <see cref="clarify_crm"/>.
+/// ChatService routes FunctionCallContent manually and never returns CRM rows to the model.
 /// </summary>
 public sealed class CrmAiTools
 {
@@ -37,11 +37,12 @@ public sealed class CrmAiTools
     }
 
     [Description(
-        "THE only CRM read tool. Query approved entities from the catalog. " +
+        "CRM read tool. Query approved entities from the catalog when the question is clear. " +
         "Supports list/count/aggregate with filters/sort/dates/limit, aggregatesJson+groupByJson, " +
         "relatedFromEntity+relatedFromId GUID filters, and linksJson for related-entity joins " +
         "(max depth 2 / max 3 linked entities). Pass a complete structured plan — never OData/SQL/FetchXML. " +
-        "Include every filter, date range, field, sort, and relationship the user requested.")]
+        "Include every filter, date range, field, sort, and relationship the user requested. " +
+        "If the CRM question is genuinely ambiguous, call clarify_crm instead of guessing.")]
     public async Task<string> query_crm(
         [Description("Approved entity logical name from the catalog (or configured alias).")] string entity,
         [Description("list | count | aggregate — choose from the user's requested result shape.")] string operation = "list",
@@ -87,7 +88,7 @@ public sealed class CrmAiTools
             "[{entity, purpose?:businessLabel, relationship?:exactCatalogSchemaName, joinType?:outer|inner, alias?, select?:[fields], filters?:[{field,operator,value}], links?:[nested]}]. " +
             "Prefer purpose from catalog rels[].lbl (e.g. Customer Account). " +
             "When more than one approved relationship exists to the related entity, you MUST set relationship to the exact catalog SchemaName (or a purpose that uniquely identifies one). " +
-            "If still ambiguous, do not call this tool — return clarification JSON with complete standalone questions instead. " +
+            "If still ambiguous, call clarify_crm instead of guessing. " +
             "Never invent SchemaNames. Nested links max depth 2.")]
         string? linksJson = null,
         CancellationToken cancellationToken = default)
@@ -155,6 +156,36 @@ public sealed class CrmAiTools
             result.Items.Count,
             result.Count);
         return json;
+    }
+
+    [Description(
+        "Request user clarification when a CRM question is genuinely ambiguous across catalog " +
+        "relationships, attributes, or interpretations. Do not use for clear latest/newest/most-recent " +
+        "list requests or other ordinary conventions. Provide 2–4 complete standalone suggestion questions. " +
+        "entityLogicalName, attributeLogicalNames, and relationshipSchemaNames must come from the catalog. " +
+        "Never invent SchemaNames. Do not call query_crm in the same turn.")]
+    public Task<string> clarify_crm(
+        [Description("Short user-facing message explaining what needs clarification.")]
+        string message,
+        [Description(
+            "Exactly 2–4 clarification options. Each question must be a complete standalone English " +
+            "question the user can submit unchanged.")]
+        ClarifyCrmSuggestionArg[] suggestions,
+        CancellationToken cancellationToken = default)
+    {
+        _ = cancellationToken;
+        // ChatService routes FunctionCallContent manually; this body is schema/discovery only.
+        _logger.LogInformation(
+            "Selected AI function: clarify_crm | suggestionCount={SuggestionCount}",
+            suggestions?.Length ?? 0);
+        return Task.FromResult(JsonSerializer.Serialize(
+            new
+            {
+                function = "clarify_crm",
+                message,
+                suggestionCount = suggestions?.Length ?? 0
+            },
+            JsonOptions));
     }
 
     /// <summary>

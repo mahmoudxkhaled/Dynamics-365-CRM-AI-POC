@@ -1,15 +1,15 @@
-<div class="composer">
+<div class="composer" [class.composer-welcome]="variant === 'welcome'">
   <form (ngSubmit)="onSubmit()">
-    <input
-      type="text"
+    <textarea
       name="message"
+      rows="1"
       [(ngModel)]="message"
       dir="ltr"
-      placeholder="Type a question about CRM data..."
+      [placeholder]="placeholder"
       autocomplete="off"
-      required
       aria-label="Message"
-    />
+      (keydown.enter)="onEnterKey($event)"
+    ></textarea>
     <button
       class="send"
       type="submit"
@@ -34,7 +34,9 @@
       }
     </button>
   </form>
-  <div class="hints">
-    Read-only CRM queries: list, count, and grouped reports for accounts, contacts, leads, and sales orders.
-  </div>
+  @if (showHints) {
+    <div class="hints">
+      Read-only CRM queries: list, count, and grouped reports for accounts, contacts, leads, and sales orders.
+    </div>
+  }
 </div>

@@ -10,104 +10,60 @@ namespace CrmAiPoc.Tests;
 public sealed class ClarificationResponseTests
 {
     [Fact]
-    public void Parser_Accepts_Valid_Clarification_Json()
+    public void ToolArgs_Parser_Accepts_Valid_Clarification()
     {
-        var parsed = ClarificationResponseParser.TryParse(
-            """
-            {
-              "type": "clarification",
-              "message": "Which of these queries would you like to run?",
-              "suggestions": [
-                {
-                  "label": "By Created On",
-                  "question": "Show the latest 5 Sales Orders by Created On.",
-                  "entityLogicalName": "salesorder",
-                  "attributeLogicalNames": ["createdon"]
-                },
-                {
-                  "label": "By Modified On",
-                  "question": "Show the latest 5 Sales Orders by Modified On.",
-                  "entityLogicalName": "salesorder",
-                  "attributeLogicalNames": ["modifiedon"]
-                }
-              ]
-            }
-            """);
+        var parsed = ClarifyCrmArgumentParser.ParseFromToolArguments(ValidArgs());
 
-        Assert.True(parsed.IsClarificationAttempt);
         Assert.True(parsed.Success);
         Assert.Equal(2, parsed.Suggestions.Count);
         Assert.Contains("Created On", parsed.Suggestions[0].Question);
     }
 
     [Fact]
-    public void Parser_Rejects_Partial_Field_Name_As_Question()
+    public void ToolArgs_Parser_Rejects_Partial_Field_Name_As_Question()
     {
-        var parsed = ClarificationResponseParser.TryParse(
-            """
-            {
-              "type": "clarification",
-              "message": "Pick one",
-              "suggestions": [
-                { "label": "A", "question": "Created On", "entityLogicalName": "salesorder", "attributeLogicalNames": ["createdon"] },
-                { "label": "B", "question": "Show the latest 5 Sales Orders by Modified On.", "entityLogicalName": "salesorder", "attributeLogicalNames": ["modifiedon"] }
-              ]
-            }
-            """);
+        var parsed = ClarifyCrmArgumentParser.ParseFromToolArguments(new Dictionary<string, object?>
+        {
+            ["message"] = "Pick one",
+            ["suggestions"] = """
+                [
+                  { "label": "A", "question": "Created On", "entityLogicalName": "salesorder", "attributeLogicalNames": ["createdon"] },
+                  { "label": "B", "question": "Show the latest 5 Sales Orders by Modified On.", "entityLogicalName": "salesorder", "attributeLogicalNames": ["modifiedon"] }
+                ]
+                """
+        });
 
-        Assert.True(parsed.IsClarificationAttempt);
         Assert.False(parsed.Success);
         Assert.Contains("complete standalone", parsed.Error, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void Parser_Rejects_Wrong_Suggestion_Count()
+    public void ToolArgs_Parser_Rejects_Wrong_Suggestion_Count()
     {
-        var parsed = ClarificationResponseParser.TryParse(
-            """
-            {
-              "type": "clarification",
-              "message": "Pick one",
-              "suggestions": [
-                {
-                  "label": "Only one",
-                  "question": "Show the latest 5 Sales Orders by Created On.",
-                  "entityLogicalName": "salesorder",
-                  "attributeLogicalNames": ["createdon"]
-                }
-              ]
-            }
-            """);
+        var parsed = ClarifyCrmArgumentParser.ParseFromToolArguments(new Dictionary<string, object?>
+        {
+            ["message"] = "Pick one",
+            ["suggestions"] = """
+                [
+                  {
+                    "label": "Only one",
+                    "question": "Show the latest 5 Sales Orders by Created On.",
+                    "entityLogicalName": "salesorder",
+                    "attributeLogicalNames": ["createdon"]
+                  }
+                ]
+                """
+        });
 
-        Assert.True(parsed.IsClarificationAttempt);
         Assert.False(parsed.Success);
+        Assert.Contains("2–4", parsed.Error);
     }
 
     [Fact]
     public void Validator_Accepts_Catalog_Backed_Suggestions()
     {
         var (policy, catalog) = CreateCatalog();
-        var parsed = ClarificationResponseParser.TryParse(
-            """
-            {
-              "type": "clarification",
-              "message": "Which of these queries would you like to run?",
-              "suggestions": [
-                {
-                  "label": "By Created On",
-                  "question": "Show the latest 5 Sales Orders by Created On.",
-                  "entityLogicalName": "salesorder",
-                  "attributeLogicalNames": ["createdon"]
-                },
-                {
-                  "label": "By Modified On",
-                  "question": "Show the latest 5 Sales Orders by Modified On.",
-                  "entityLogicalName": "salesorder",
-                  "attributeLogicalNames": ["modifiedon"]
-                }
-              ]
-            }
-            """);
+        var parsed = ClarifyCrmArgumentParser.ParseFromToolArguments(ValidArgs());
 
         var validated = ClarificationSuggestionValidator.Validate(parsed, catalog, policy);
         Assert.True(validated.Success, validated.Error);
@@ -123,27 +79,26 @@ public sealed class ClarificationResponseTests
     public void Validator_Rejects_Unauthorized_Or_Missing_Attribute()
     {
         var (policy, catalog) = CreateCatalog();
-        var parsed = ClarificationResponseParser.TryParse(
-            """
-            {
-              "type": "clarification",
-              "message": "Which of these queries would you like to run?",
-              "suggestions": [
-                {
-                  "label": "By Fake Field",
-                  "question": "Show the latest 5 Sales Orders by Fake Field.",
-                  "entityLogicalName": "salesorder",
-                  "attributeLogicalNames": ["not_a_real_field"]
-                },
-                {
-                  "label": "By Created On",
-                  "question": "Show the latest 5 Sales Orders by Created On.",
-                  "entityLogicalName": "salesorder",
-                  "attributeLogicalNames": ["createdon"]
-                }
-              ]
-            }
-            """);
+        var parsed = ClarifyCrmArgumentParser.ParseFromToolArguments(new Dictionary<string, object?>
+        {
+            ["message"] = "Which of these queries would you like to run?",
+            ["suggestions"] = """
+                [
+                  {
+                    "label": "By Fake Field",
+                    "question": "Show the latest 5 Sales Orders by Fake Field.",
+                    "entityLogicalName": "salesorder",
+                    "attributeLogicalNames": ["not_a_real_field"]
+                  },
+                  {
+                    "label": "By Created On",
+                    "question": "Show the latest 5 Sales Orders by Created On.",
+                    "entityLogicalName": "salesorder",
+                    "attributeLogicalNames": ["createdon"]
+                  }
+                ]
+                """
+        });
 
         var validated = ClarificationSuggestionValidator.Validate(parsed, catalog, policy);
         Assert.False(validated.Success);
@@ -155,27 +110,26 @@ public sealed class ClarificationResponseTests
     public void Validator_Rejects_Entity_Not_In_Ai_Catalog()
     {
         var (policy, catalog) = CreateCatalog();
-        var parsed = ClarificationResponseParser.TryParse(
-            """
-            {
-              "type": "clarification",
-              "message": "Which of these queries would you like to run?",
-              "suggestions": [
-                {
-                  "label": "Opportunities",
-                  "question": "Show the latest 5 Opportunities by Created On.",
-                  "entityLogicalName": "opportunity",
-                  "attributeLogicalNames": ["createdon"]
-                },
-                {
-                  "label": "By Created On",
-                  "question": "Show the latest 5 Sales Orders by Created On.",
-                  "entityLogicalName": "salesorder",
-                  "attributeLogicalNames": ["createdon"]
-                }
-              ]
-            }
-            """);
+        var parsed = ClarifyCrmArgumentParser.ParseFromToolArguments(new Dictionary<string, object?>
+        {
+            ["message"] = "Which of these queries would you like to run?",
+            ["suggestions"] = """
+                [
+                  {
+                    "label": "Opportunities",
+                    "question": "Show the latest 5 Opportunities by Created On.",
+                    "entityLogicalName": "opportunity",
+                    "attributeLogicalNames": ["createdon"]
+                  },
+                  {
+                    "label": "By Created On",
+                    "question": "Show the latest 5 Sales Orders by Created On.",
+                    "entityLogicalName": "salesorder",
+                    "attributeLogicalNames": ["createdon"]
+                  }
+                ]
+                """
+        });
 
         var validated = ClarificationSuggestionValidator.Validate(parsed, catalog, policy);
         Assert.False(validated.Success);
@@ -201,13 +155,33 @@ public sealed class ClarificationResponseTests
     }
 
     [Fact]
-    public void Plain_Text_Is_Not_Treated_As_Clarification()
+    public void Old_Text_Clarification_Parser_Type_Is_Removed()
     {
-        var parsed = ClarificationResponseParser.TryParse(
-            "I can only answer read-only CRM questions about approved entities.");
-        Assert.False(parsed.IsClarificationAttempt);
-        Assert.False(parsed.Success);
+        var type = Type.GetType("CrmAiPoc.Api.Ai.ClarificationResponseParser, CrmAiPoc.Api");
+        Assert.Null(type);
     }
+
+    private static Dictionary<string, object?> ValidArgs() =>
+        new()
+        {
+            ["message"] = "Which of these queries would you like to run?",
+            ["suggestions"] = """
+                [
+                  {
+                    "label": "By Created On",
+                    "question": "Show the latest 5 Sales Orders by Created On.",
+                    "entityLogicalName": "salesorder",
+                    "attributeLogicalNames": ["createdon"]
+                  },
+                  {
+                    "label": "By Modified On",
+                    "question": "Show the latest 5 Sales Orders by Modified On.",
+                    "entityLogicalName": "salesorder",
+                    "attributeLogicalNames": ["modifiedon"]
+                  }
+                ]
+                """
+        };
 
     private static (EntityApprovalPolicy Policy, CrmAiMetadataCatalogBuildResult Catalog) CreateCatalog()
     {
@@ -228,22 +202,21 @@ public sealed class ClarificationResponseTests
             IsApprovedForAi = true,
             Attributes =
             [
-                new()
+                new CrmAttributeMetadata
                 {
                     LogicalName = "salesorderid",
                     ODataPropertyName = "salesorderid",
                     Kind = CrmAttributeKind.Uniqueidentifier,
                     IsValidForRead = true
                 },
-                new()
+                new CrmAttributeMetadata
                 {
                     LogicalName = "name",
                     ODataPropertyName = "name",
-                    DisplayName = "Name",
                     Kind = CrmAttributeKind.String,
                     IsValidForRead = true
                 },
-                new()
+                new CrmAttributeMetadata
                 {
                     LogicalName = "createdon",
                     ODataPropertyName = "createdon",
@@ -252,7 +225,7 @@ public sealed class ClarificationResponseTests
                     IsValidForRead = true,
                     IsSortable = true
                 },
-                new()
+                new CrmAttributeMetadata
                 {
                     LogicalName = "modifiedon",
                     ODataPropertyName = "modifiedon",
@@ -260,28 +233,62 @@ public sealed class ClarificationResponseTests
                     Kind = CrmAttributeKind.DateTime,
                     IsValidForRead = true,
                     IsSortable = true
-                },
-                new()
-                {
-                    LogicalName = "totalamount",
-                    ODataPropertyName = "totalamount",
-                    DisplayName = "Total Amount",
-                    Kind = CrmAttributeKind.Money,
-                    IsValidForRead = true,
-                    IsSortable = true
                 }
             ]
         });
 
-        var service = new CrmAiMetadataCatalogService(
+        var catalogService = new CrmAiMetadataCatalogService(
             registry,
             policy,
             new CrmRelationshipLabeler(options),
             options,
             NullLogger<CrmAiMetadataCatalogService>.Instance);
 
-        var catalog = service.BuildApprovedCatalogAsync().GetAwaiter().GetResult();
-        Assert.True(catalog.Success, catalog.Error);
-        return (policy, catalog);
+        var retrieval = new CrmAiPoc.Api.Crm.Metadata.Semantic.SemanticMetadataRetrievalResult
+        {
+            Question = "latest sales orders",
+            ContentHash = "test",
+            EntityHits =
+            [
+                new CrmAiPoc.Api.Crm.Metadata.Semantic.SemanticHit
+                {
+                    Similarity = 0.9f,
+                    Document = new CrmAiPoc.Api.Crm.Metadata.Semantic.MetadataSearchDocument
+                    {
+                        Id = "entity:salesorder",
+                        Kind = CrmAiPoc.Api.Crm.Metadata.Semantic.MetadataSearchDocumentKind.Entity,
+                        EntityLogicalName = "salesorder",
+                        SearchText = "x",
+                        EmbeddingInput = "x"
+                    }
+                }
+            ],
+            AttributeHits =
+            [
+                Hit("salesorder", "createdon"),
+                Hit("salesorder", "modifiedon"),
+                Hit("salesorder", "name"),
+                Hit("salesorder", "salesorderid")
+            ]
+        };
+
+        var built = catalogService.BuildCatalogFromSemanticRetrievalAsync(retrieval).GetAwaiter().GetResult();
+        Assert.True(built.Success, built.Error);
+        return (policy, built);
     }
+
+    private static CrmAiPoc.Api.Crm.Metadata.Semantic.SemanticHit Hit(string entity, string attr) =>
+        new()
+        {
+            Similarity = 0.8f,
+            Document = new CrmAiPoc.Api.Crm.Metadata.Semantic.MetadataSearchDocument
+            {
+                Id = $"attribute:{entity}.{attr}",
+                Kind = CrmAiPoc.Api.Crm.Metadata.Semantic.MetadataSearchDocumentKind.Attribute,
+                EntityLogicalName = entity,
+                AttributeLogicalName = attr,
+                SearchText = "x",
+                EmbeddingInput = "x"
+            }
+        };
 }

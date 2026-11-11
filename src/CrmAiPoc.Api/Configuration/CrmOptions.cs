@@ -4,8 +4,8 @@ public sealed class CrmOptions
 {
     public const string SectionName = "Crm";
 
-    /// <summary>Mock (default) or Dynamics365.</summary>
-    public string Provider { get; set; } = "Mock";
+    /// <summary>Must be Dynamics365 (live CRM only).</summary>
+    public string Provider { get; set; } = "Dynamics365";
 
     /// <summary>Dynamics 365 organization Web API base URL.</summary>
     public string? BaseUrl { get; set; }
@@ -44,7 +44,7 @@ public sealed class CrmOptions
     public bool AllowSendApprovedMetadataCatalogToAi { get; set; }
 
     /// <summary>
-    /// When true (default), load approved entity metadata from CRM/Mock in a background hosted service at startup
+    /// When true (default), load approved entity metadata from Dynamics in a background hosted service at startup
     /// so chat does not wait on first-request discovery.
     /// </summary>
     public bool WarmApprovedMetadataOnStartup { get; set; } = true;

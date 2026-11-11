@@ -9,7 +9,7 @@ export const environment = {
    * Example: 'https://crm-ai-api.te.eg' or 'http://localhost:5138' for CRM+local API tests.
    * Leave '' only if a reverse proxy serves /api on the same origin as the iframe page.
    */
-  apiBaseUrl: '',
+  apiBaseUrl: 'http://localhost:5138',
   /** Publisher virtual folder for CRM web resources (must match CRM-DEPLOY.md). */
   crmWebResourcePrefix: 'te_/CrmAiAssistant'
 };

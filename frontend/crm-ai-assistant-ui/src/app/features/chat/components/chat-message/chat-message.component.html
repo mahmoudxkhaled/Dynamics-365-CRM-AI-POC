@@ -5,6 +5,7 @@
 } @else if (mode === 'clarification') {
   <div class="msg assistant clarification">
     <p class="clarification-message">{{ message.text || message.reply }}</p>
+    <!-- Clarification suggestion chips temporarily hidden
     <div class="clarification-options" role="group" aria-label="Clarification suggestions">
       @for (suggestion of message.suggestions; track suggestion.question) {
         <button
@@ -18,6 +19,7 @@
         </button>
       }
     </div>
+    -->
   </div>
 } @else if (mode === 'count') {
   <div class="msg assistant">

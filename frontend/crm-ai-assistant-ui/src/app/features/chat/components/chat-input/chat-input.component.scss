@@ -1,8 +1,60 @@
 :host {
   display: block;
+  width: 100%;
 }
 
 .send-icon {
   display: inline-block;
   flex: 0 0 auto;
+}
+
+.composer-welcome {
+  border-top: none;
+  padding: 0;
+  background: transparent;
+}
+
+.composer-welcome form {
+  align-items: flex-end;
+  padding: 10px 10px 10px 14px;
+  border: 1px solid var(--crm-border-strong, #c8c6c4);
+  border-radius: 12px;
+  background: var(--crm-surface, #fff);
+  box-shadow: 0 1px 2px rgba(50, 49, 48, 0.06);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.composer-welcome form:focus-within {
+  border-color: var(--crm-blue, #0078d4);
+  box-shadow: 0 0 0 1px var(--crm-blue, #0078d4);
+}
+
+.composer-welcome textarea {
+  min-height: 44px;
+  max-height: 140px;
+  padding: 8px 4px;
+  border: none;
+  border-radius: 0;
+  font-size: 15px;
+  line-height: 1.45;
+  resize: none;
+  background: transparent;
+}
+
+.composer-welcome textarea:focus {
+  border: none;
+  box-shadow: none;
+  outline: none;
+}
+
+.composer-welcome .send {
+  height: 36px;
+  min-width: 78px;
+  border-radius: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-welcome form {
+    transition: none;
+  }
 }

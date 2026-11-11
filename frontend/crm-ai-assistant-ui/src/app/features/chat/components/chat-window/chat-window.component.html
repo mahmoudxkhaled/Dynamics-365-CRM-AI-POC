@@ -1,29 +1,27 @@
-<section class="panel chat-panel">
-  <div class="chat" #chatScroll>
-    @for (msg of messages; track trackById($index, msg)) {
-      <app-chat-message
-        [message]="msg"
-        [suggestionsDisabled]="inputBlocked"
-        (suggestionSelected)="onClarificationSuggestion($event)"
-      />
-    }
+<section class="panel chat-panel" [class.is-welcome]="isWelcomeMode">
+  @if (isWelcomeMode) {
+    <div class="welcome" role="main">
+      <div class="welcome-inner">
+        <h2 class="welcome-title">What can I help you explore today?</h2>
+        <p class="welcome-subtitle">Ask questions about your CRM data.</p>
 
-    @if (loading) {
-      <div class="msg assistant typing" role="status" aria-live="polite" aria-label="Assistant is typing">
-        <span class="typing-dot" aria-hidden="true"></span>
-        <span class="typing-dot" aria-hidden="true"></span>
-        <span class="typing-dot" aria-hidden="true"></span>
-      </div>
-    }
+        <div class="welcome-composer">
+          <app-chat-input
+            variant="welcome"
+            [loading]="loading"
+            [cooldownSeconds]="cooldownRemainingSeconds"
+            [showHints]="false"
+            placeholder="Ask anything about your CRM..."
+            (send)="onSend($event)"
+          />
+        </div>
 
-    @if (showSuggestions) {
-      <div class="suggestions">
-        <p class="suggestions-title">Suggested questions</p>
-        <div class="suggestions-grid">
+        <!-- Suggestions temporarily hidden
+        <div class="welcome-suggestions">
           @for (q of suggestedQuestions; track q) {
             <button
               type="button"
-              class="suggestion-chip"
+              class="welcome-chip"
               [disabled]="inputBlocked"
               (click)="onSuggestion(q)"
             >
@@ -31,12 +29,38 @@
             </button>
           }
         </div>
+        -->
       </div>
-    }
-  </div>
-  <app-chat-input
-    [loading]="loading"
-    [cooldownSeconds]="cooldownRemainingSeconds"
-    (send)="onSend($event)"
-  />
+    </div>
+  } @else {
+    <div class="chat" #chatScroll>
+      @for (msg of messages; track trackById($index, msg)) {
+        <app-chat-message
+          [message]="msg"
+          [suggestionsDisabled]="inputBlocked"
+          (suggestionSelected)="onClarificationSuggestion($event)"
+        />
+      }
+
+      @if (loading) {
+        <div class="thinking" role="status" aria-live="polite" aria-label="Thinking">
+          <span class="thinking-label">Thinking</span>
+          <span class="thinking-dots" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </span>
+        </div>
+      }
+    </div>
+
+    <app-chat-input
+      variant="conversation"
+      [loading]="loading"
+      [cooldownSeconds]="cooldownRemainingSeconds"
+      [showHints]="true"
+      placeholder="Ask anything about your CRM..."
+      (send)="onSend($event)"
+    />
+  }
+
+  <p class="ai-disclaimer">AI can make mistakes. Check important info.</p>
 </section>

@@ -2,7 +2,7 @@ namespace CrmAiPoc.Api.Ai;
 
 /// <summary>
 /// Builds user-facing chat replies when the model returns text without a tool call.
-/// CRM row formatting for query_crm is handled by <see cref="GenericCrmReplyFormatter"/>.
+/// Successful query_crm results use structured data only (no generated result summaries).
 /// </summary>
 public static class LocalCrmReplyFormatter
 {
@@ -14,6 +14,6 @@ public static class LocalCrmReplyFormatter
             return modelText.Trim();
         }
 
-        return "I can only help with approved read-only CRM queries via query_crm or clarify_crm.";
+        return "I can only help with approved read-only CRM queries via query_crm, clarify_crm, or unsupported_crm_request.";
     }
 }

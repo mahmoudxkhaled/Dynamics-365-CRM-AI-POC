@@ -36,3 +36,22 @@ public sealed class CrmGroupBySpec
     public CrmDateGrouping DateGrouping { get; init; } = CrmDateGrouping.None;
     public required string Alias { get; init; }
 }
+
+/// <summary>Post-aggregate derived metric computed from complete grouped results.</summary>
+public enum CrmCalculatedMetricKind
+{
+    /// <summary>
+    /// (row[sourceAlias] / sum(all rows[sourceAlias])) * 100.
+    /// Only valid for Sum or Count aggregate aliases when the full group set is available.
+    /// </summary>
+    PercentOfTotal = 0
+}
+
+public sealed class CrmCalculatedMetricSpec
+{
+    public required CrmCalculatedMetricKind Kind { get; init; }
+    /// <summary>Aggregate alias used as numerator / total basis.</summary>
+    public required string SourceAlias { get; init; }
+    /// <summary>Output column alias written onto each aggregate row.</summary>
+    public required string ResultAlias { get; init; }
+}

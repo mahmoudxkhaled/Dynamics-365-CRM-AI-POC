@@ -1,12 +1,11 @@
 namespace CrmAiPoc.Api.Ai;
 
 /// <summary>
-/// Narrow Arabic-script gate for user questions. Does not inspect CRM record values.
+/// Arabic-script detection helper for diagnostics. User questions may be Arabic/English/mixed.
+/// Does not inspect CRM record values.
 /// </summary>
 public static class EnglishInputPolicy
 {
-    public const string RequireEnglishMessage = "Please enter your CRM question in English.";
-
     /// <summary>
     /// True when the text contains Arabic Unicode letters (U+0600–U+06FF).
     /// </summary>

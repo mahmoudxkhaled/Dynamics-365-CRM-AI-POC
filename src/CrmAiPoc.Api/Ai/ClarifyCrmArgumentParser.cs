@@ -51,25 +51,12 @@ public static class ClarifyCrmArgumentParser
             return Fail($"Clarification must include 2–4 suggestions (received {rawSuggestions.Count}).");
         }
 
+        // Keep incomplete suggestions intact — ClarificationSuggestionValidator drops invalid chips.
         var suggestions = new List<RawSuggestion>(rawSuggestions.Count);
         foreach (var item in rawSuggestions)
         {
             var label = (item.Label ?? string.Empty).Trim();
             var question = (item.Question ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(question))
-            {
-                return Fail("Each clarification suggestion must include a complete question.");
-            }
-
-            if (question.Length < 12 || !question.Contains(' ', StringComparison.Ordinal))
-            {
-                return Fail("Clarification suggestions must be complete standalone questions.");
-            }
-
-            if (string.IsNullOrWhiteSpace(label))
-            {
-                label = TruncateLabel(question);
-            }
 
             suggestions.Add(new RawSuggestion
             {
@@ -177,12 +164,6 @@ public static class ClarifyCrmArgumentParser
             JsonElement je => je.ToString(),
             _ => Convert.ToString(raw, CultureInfo.InvariantCulture)
         };
-    }
-
-    private static string TruncateLabel(string question)
-    {
-        var trimmed = question.Trim();
-        return trimmed.Length <= 48 ? trimmed : trimmed[..45] + "…";
     }
 
     private static ParseResult Fail(string error) =>

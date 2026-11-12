@@ -1,39 +1,75 @@
 @if (message.role === 'meta') {
   <div class="msg meta">{{ message.text }}</div>
 } @else if (message.role === 'user') {
-  <div class="msg user">{{ message.text }}</div>
+  <div class="msg user" [attr.dir]="userTextDir">{{ message.text }}</div>
 } @else if (mode === 'clarification') {
   <div class="msg assistant clarification">
     <p class="clarification-message">{{ message.text || message.reply }}</p>
-    <!-- Clarification suggestion chips temporarily hidden
     <div class="clarification-options" role="group" aria-label="Clarification suggestions">
-      @for (suggestion of message.suggestions; track suggestion.question) {
+      @for (suggestion of message.suggestions || []; track suggestion.question) {
         <button
           type="button"
           class="clarification-chip"
-          [disabled]="suggestionsDisabled"
+          [disabled]="suggestionsDisabled || customSubmitting"
           (click)="onSuggestionClick(suggestion)"
         >
           <span class="clarification-label">{{ suggestion.label }}</span>
           <span class="clarification-question">{{ suggestion.question }}</span>
         </button>
       }
+
+      <button
+        type="button"
+        class="clarification-chip clarification-other"
+        [class.is-expanded]="showCustomClarification"
+        [disabled]="suggestionsDisabled || customSubmitting"
+        (click)="onOtherClick()"
+        [attr.aria-expanded]="showCustomClarification"
+      >
+        <span class="clarification-label">{{ otherOptionLabel }}</span>
+        <span class="clarification-question">Write your own clarification and send it.</span>
+      </button>
     </div>
-    -->
+
+    @if (showCustomClarification) {
+      <div class="clarification-custom" role="group" aria-label="Custom clarification">
+        <label class="clarification-custom-label" [attr.for]="'custom-clarify-' + message.id">
+          Your clarification
+        </label>
+        <textarea
+          class="clarification-custom-input"
+          [id]="'custom-clarify-' + message.id"
+          rows="3"
+          maxlength="500"
+          [disabled]="suggestionsDisabled || customSubmitting"
+          [(ngModel)]="customClarificationText"
+          placeholder="Type how you want the CRM question answered…"
+        ></textarea>
+        <div class="clarification-custom-actions">
+          <button
+            type="button"
+            class="clarification-send"
+            [disabled]="!canSubmitCustomClarification"
+            (click)="onCustomClarificationSubmit()"
+          >
+            Send
+          </button>
+        </div>
+      </div>
+    }
   </div>
 } @else if (mode === 'count') {
   <div class="msg assistant">
     <div class="count-badge">{{ countLabel }}: {{ message.structuredData?.count }}{{ countCapped }}</div>
-    <div class="msg-meta-lines">{{ summary }}</div>
+    @if (limitationNotice) {
+      <p class="limitation-notice">{{ limitationNotice }}</p>
+    }
   </div>
 } @else if (mode === 'table') {
   <div class="msg assistant has-table">
-    @if (summary) {
-      <p class="msg-summary">{{ summaryFirst }}</p>
-    }
     <app-crm-results-table [structuredData]="message.structuredData" />
-    @if (summaryRest) {
-      <div class="msg-meta-lines">{{ summaryRest }}</div>
+    @if (limitationNotice) {
+      <p class="limitation-notice">{{ limitationNotice }}</p>
     }
   </div>
 } @else {

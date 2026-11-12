@@ -1,4 +1,4 @@
-using CrmAiPoc.Api.Configuration;
+﻿using CrmAiPoc.Api.Configuration;
 using Microsoft.Extensions.Options;
 
 namespace CrmAiPoc.Api.Crm.Metadata.Semantic;
@@ -62,19 +62,34 @@ public sealed class SemanticCrmMetadataRetriever : ISemanticCrmMetadataRetriever
 
             var hash = MetadataDocumentBuilder.ComputeContentHash(approved);
             var docs = MetadataDocumentBuilder.Build(approved);
-            var (snapshot, rebuilt) = await _index.EnsureBuiltAsync(
+            var ensure = await _index.EnsureBuiltAsync(
                 hash,
                 docs,
-                async (inputs, ct) => await EmbedInChunksAsync(inputs, ct),
+                async (inputs, ct) => await _embeddings.EmbedBatchAsync(inputs, ct),
                 cancellationToken);
+
+            if (!ensure.Success || ensure.Snapshot is null)
+            {
+                return new SemanticMetadataRetrievalResult
+                {
+                    Question = question,
+                    ContentHash = _index.ContentHash ?? string.Empty,
+                    IndexedDocumentCount = _index.DocumentCount,
+                    Error = ensure.FailureReason ?? "Semantic index is not ready."
+                };
+            }
+
+            var snapshot = ensure.Snapshot;
+            var rebuilt = ensure.Rebuilt;
 
             _logger.LogInformation(
                 "[SEMANTIC INDEX] ContentHash={ContentHash} IndexedDocumentCount={IndexedDocumentCount} " +
-                "IndexRebuilt={IndexRebuilt} IndexInitMode={IndexInitMode}",
+                "IndexRebuilt={IndexRebuilt} IndexInitMode={IndexInitMode} State={State}",
                 snapshot.ContentHash,
                 snapshot.Vectors.Count,
                 rebuilt,
-                rebuilt ? "Built" : "Reused");
+                rebuilt ? "Built" : "Reused",
+                ensure.State);
 
             var queryVector = await _embeddings.EmbedAsync(
                 MetadataDocumentBuilder.PrefixQuery(question),
@@ -294,23 +309,6 @@ public sealed class SemanticCrmMetadataRetriever : ISemanticCrmMetadataRetriever
 
     private static string AttributeKey(string entity, string attribute) =>
         entity + "." + attribute;
-
-    private async Task<IReadOnlyList<float[]>> EmbedInChunksAsync(
-        IReadOnlyList<string> inputs,
-        CancellationToken cancellationToken)
-    {
-        // Keep batches modest for local Ollama; still one rebuild per metadata snapshot.
-        const int chunkSize = 32;
-        var all = new List<float[]>(inputs.Count);
-        for (var offset = 0; offset < inputs.Count; offset += chunkSize)
-        {
-            var chunk = inputs.Skip(offset).Take(chunkSize).ToArray();
-            var vectors = await _embeddings.EmbedBatchAsync(chunk, cancellationToken);
-            all.AddRange(vectors);
-        }
-
-        return all;
-    }
 
     private static IReadOnlyList<SemanticHit> TakeTop(
         IEnumerable<SemanticHit> scored,

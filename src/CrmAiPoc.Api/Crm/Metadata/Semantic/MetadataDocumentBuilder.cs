@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 
 namespace CrmAiPoc.Api.Crm.Metadata.Semantic;
@@ -117,6 +117,7 @@ public static class MetadataDocumentBuilder
         {
             "CRM attribute",
             $"entity={entity.LogicalName}",
+            $"entityDisplayName={entity.DisplayName}",
             $"logicalName={attr.LogicalName}",
             $"type={attr.Kind}"
         };
@@ -125,9 +126,26 @@ public static class MetadataDocumentBuilder
             parts.Add($"displayName={attr.DisplayName}");
         }
 
+        if (!string.IsNullOrWhiteSpace(attr.Description))
+        {
+            parts.Add($"description={attr.Description}");
+        }
+
         if (!string.IsNullOrWhiteSpace(attr.AttributeTypeName))
         {
             parts.Add($"attributeTypeName={attr.AttributeTypeName}");
+        }
+
+        var searchableLogical = SplitTechnicalIdentifier(attr.LogicalName);
+        if (!string.IsNullOrWhiteSpace(searchableLogical) &&
+            !searchableLogical.Equals(attr.LogicalName, StringComparison.OrdinalIgnoreCase))
+        {
+            parts.Add($"searchableName={searchableLogical}");
+        }
+
+        if (attr.Aliases.Count > 0)
+        {
+            parts.Add("aliases=" + string.Join(',', attr.Aliases));
         }
 
         parts.Add($"filterable={attr.IsFilterable}");
@@ -145,6 +163,39 @@ public static class MetadataDocumentBuilder
             SearchText = text,
             EmbeddingInput = DocumentPrefix + " " + text
         };
+    }
+
+    /// <summary>
+    /// Splits camelCase / snake_case / te_prefixed identifiers into searchable words.
+    /// Generic — no entity- or attribute-specific maps.
+    /// </summary>
+    internal static string SplitTechnicalIdentifier(string? logicalName)
+    {
+        if (string.IsNullOrWhiteSpace(logicalName))
+        {
+            return string.Empty;
+        }
+
+        var raw = logicalName.Trim();
+        var sb = new StringBuilder(raw.Length + 8);
+        for (var i = 0; i < raw.Length; i++)
+        {
+            var ch = raw[i];
+            if (ch is '_' or '-' or '.')
+            {
+                sb.Append(' ');
+                continue;
+            }
+
+            if (i > 0 && char.IsUpper(ch) && (char.IsLower(raw[i - 1]) || char.IsDigit(raw[i - 1])))
+            {
+                sb.Append(' ');
+            }
+
+            sb.Append(char.ToLowerInvariant(ch));
+        }
+
+        return string.Join(' ', sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 
     private static MetadataSearchDocument BuildRelationshipDocument(

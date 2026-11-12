@@ -248,6 +248,8 @@ body {
   border-color: var(--crm-user-border);
   color: var(--crm-text);
   white-space: pre-wrap;
+  text-align: start;
+  unicode-bidi: plaintext;
 }
 
 .msg.assistant {
@@ -281,20 +283,6 @@ body {
   border-color: var(--crm-fail-border);
   background: var(--crm-fail-bg);
   color: var(--crm-fail);
-}
-
-.msg-summary {
-  margin: 0 0 8px;
-  white-space: pre-wrap;
-  color: var(--crm-text);
-  font-size: 14px;
-}
-
-.msg-meta-lines {
-  margin-top: 8px;
-  color: var(--crm-text-secondary);
-  font-size: 12px;
-  white-space: pre-wrap;
 }
 
 /* —— Dynamics-style data grid —— */
@@ -375,11 +363,14 @@ table.crm-table tbody td.col-empty:first-child {
 
 table.crm-table th.col-text,
 table.crm-table td.col-text {
+  text-align: left;
   white-space: normal;
-  min-width: 140px;
-  max-width: 280px;
-  overflow-wrap: break-word;
+  min-width: 120px;
+  max-width: 260px;
+  overflow-wrap: anywhere;
   word-break: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 table.crm-table th.col-num,
@@ -387,12 +378,31 @@ table.crm-table td.col-num {
   text-align: right;
   font-variant-numeric: tabular-nums;
   color: var(--crm-text);
+  white-space: nowrap;
+  min-width: 88px;
+  max-width: 160px;
+}
+
+table.crm-table th.col-date,
+table.crm-table td.col-date {
+  text-align: left;
+  white-space: nowrap;
+  min-width: 100px;
+  max-width: 120px;
+  font-variant-numeric: tabular-nums;
+}
+
+table.crm-table th.col-choice,
+table.crm-table td.col-choice {
+  text-align: left;
+  white-space: nowrap;
+  min-width: 88px;
+  max-width: 160px;
 }
 
 table.crm-table th.col-empty,
 table.crm-table td.col-empty {
   color: var(--crm-text-secondary);
-  min-width: 72px;
 }
 
 .count-badge {
@@ -434,13 +444,14 @@ table.crm-table td.col-empty {
   color: var(--crm-text);
   font-size: 14px;
   font-family: inherit;
-  direction: ltr;
-  text-align: left;
+  text-align: start;
   unicode-bidi: plaintext;
   min-height: 32px;
-  max-height: 120px;
+  max-height: 160px;
   line-height: 1.4;
+  overflow-y: auto;
   resize: none;
+  field-sizing: content;
   transition: border-color 0.1s ease;
 }
 

@@ -51,6 +51,13 @@ public sealed class CrmQueryPlan
     public IReadOnlyList<CrmGroupBySpec> GroupBy { get; init; } = Array.Empty<CrmGroupBySpec>();
 
     /// <summary>
+    /// Derived metrics computed after a complete aggregate result set is retrieved
+    /// (for example percent-of-total). Never sends CRM rows to Groq.
+    /// </summary>
+    public IReadOnlyList<CrmCalculatedMetricSpec> CalculatedMetrics { get; init; } =
+        Array.Empty<CrmCalculatedMetricSpec>();
+
+    /// <summary>
     /// Metadata-validated related-entity links (FetchXML link-entity).
     /// Nested links enable bounded multi-hop joins (see <see cref="CrmQueryLimits.MaxLinkDepth"/>).
     /// </summary>
@@ -61,7 +68,15 @@ public sealed class CrmQueryFilter
 {
     public required string Field { get; init; }
     public required CrmFilterOperator Operator { get; init; }
-    public required string Value { get; init; }
+
+    /// <summary>
+    /// Required for comparison operators. Must be empty for <see cref="CrmFilterOperator.Null"/> /
+    /// <see cref="CrmFilterOperator.NotNull"/>.
+    /// </summary>
+    public string Value { get; init; } = string.Empty;
+
+    public static bool IsValuelessOperator(CrmFilterOperator op) =>
+        op is CrmFilterOperator.Null or CrmFilterOperator.NotNull;
 }
 
 public sealed class CrmQuerySort
@@ -119,6 +134,7 @@ public static class CrmQueryLimits
     public const int MaxAggregates = 3;
     public const int MaxGroupByFields = 3;
     public const int MaxAggregateResultRows = 100;
+    public const int MaxCalculatedMetrics = 2;
 
     /// <summary>Maximum nesting depth for link-entity chains (root = 0).</summary>
     public const int MaxLinkDepth = 2;
@@ -151,6 +167,25 @@ public sealed class GenericCrmQueryResult
     public bool CountLimitExceededAnnotation { get; init; }
 
     public string? Message { get; init; }
+
+    /// <summary>Normalized Dynamics error code when execution failed (e.g. 80041131).</summary>
+    public string? DynamicsErrorCode { get; init; }
+
+    /// <summary>HTTP status from Dynamics when execution failed.</summary>
+    public int? DynamicsHttpStatus { get; init; }
+
+    /// <summary>
+    /// True when Dynamics rejected the FetchXML for a clearly recoverable semantic/syntax reason
+    /// that the LLM may correct. Never true for auth, transport, or successful empty results.
+    /// </summary>
+    public bool IsRecoverableFetchXmlError { get; init; }
+
+    /// <summary>Sanitized feedback suitable for Groq tool results (no raw CRM payload).</summary>
+    public string? SanitizedCorrectionFeedback { get; init; }
+
+    /// <summary>Stable correction code for AI feedback (e.g. INVALID_SORT), when recoverable.</summary>
+    public string? CorrectionErrorCode { get; init; }
+
     public string ProviderName { get; init; } = "Dynamics365";
     public string? PrimaryNameAttribute { get; init; }
     public string? PrimaryIdAttribute { get; init; }
@@ -163,4 +198,15 @@ public sealed class GenericCrmQueryResult
     /// Preserved for zero-result list queries so the UI can still render headers.
     /// </summary>
     public IReadOnlyList<CrmTableColumn> Columns { get; init; } = Array.Empty<CrmTableColumn>();
+
+    /// <summary>
+    /// Aggregate presentation metadata (overall vs Top-N totals). Null for non-aggregate results.
+    /// </summary>
+    public CrmAggregatePresentation? AggregatePresentation { get; init; }
+
+    /// <summary>complete | partial — from LLM query_crm resultMode.</summary>
+    public string? ResultMode { get; init; }
+
+    /// <summary>User-facing limitation when ResultMode is partial.</summary>
+    public string? Limitation { get; init; }
 }

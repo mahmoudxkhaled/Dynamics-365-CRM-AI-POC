@@ -13,7 +13,7 @@ public sealed class SingleStageAiPlanningTests
     {
         var options = new CrmOptions
         {
-            AllowSendApprovedMetadataCatalogToAi = true,
+            AllowSendApprovedMetadataCatalogToAi = false,
             ApprovedEntities = approved.ToList()
         };
         var opts = Options.Create(options);
@@ -27,25 +27,23 @@ public sealed class SingleStageAiPlanningTests
     }
 
     [Fact]
-    public async Task Outbound_History_Is_Single_Stage_System_Catalog_User()
+    public void Outbound_History_Is_System_Plus_User_Only_No_Catalog()
     {
-        var catalog = CreateCatalog(["account", "product", "salesorder"]);
-        var built = await catalog.BuildApprovedCatalogAsync("Show the latest 3 products.");
-        Assert.True(built.Success, built.Error);
-
-        var history = ChatService.BuildOutboundHistory("Show the latest 3 products.", built);
-        Assert.Equal(3, history.Count);
+        var history = ChatService.BuildOutboundHistory("Show the latest 3 products.");
+        Assert.Equal(2, history.Count);
         Assert.Equal(ChatRole.System, history[0].Role);
-        Assert.Equal(ChatRole.System, history[1].Role);
-        Assert.Equal(ChatRole.User, history[2].Role);
-        Assert.Equal("Show the latest 3 products.", history[2].Text);
-        Assert.Contains(CrmAiMetadataCatalogService.BeginMarker, history[1].Text);
+        Assert.Equal(ChatRole.User, history[1].Role);
+        Assert.Equal("Show the latest 3 products.", history[1].Text);
         Assert.Contains("query_crm", history[0].Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(CrmAiMetadataCatalogService.BeginMarker, history[0].Text, StringComparison.Ordinal);
+        Assert.DoesNotContain(CrmAiMetadataCatalogService.BeginMarker, history[1].Text, StringComparison.Ordinal);
+        Assert.DoesNotContain(history, m => m.Role == ChatRole.Assistant);
     }
 
     [Fact]
     public async Task Catalog_Includes_All_Approved_Entities_And_Only_Approved_Relationships()
     {
+        // Catalog builder remains available for diagnostics/POC; chat planning no longer sends it.
         var options = Options.Create(new CrmOptions
         {
             AllowSendApprovedMetadataCatalogToAi = true,
@@ -144,21 +142,13 @@ public sealed class SingleStageAiPlanningTests
     [Fact]
     public void Recording_Chat_Client_Counts_Single_Request_For_Standard_Question()
     {
-        // Structural guarantee used by live/integration wrappers: one planning call path.
-        var history = ChatService.BuildOutboundHistory(
-            "Show the latest 3 products.",
-            new CrmAiMetadataCatalogBuildResult
-            {
-                Enabled = true,
-                Success = true,
-                FormattedBlock =
-                    $"{CrmAiMetadataCatalogService.BeginMarker}\n{{\"entities\":[]}}\n{CrmAiMetadataCatalogService.EndMarker}",
-                IncludedEntityCount = 1,
-                CharacterCount = 64
-            });
+        var history = ChatService.BuildOutboundHistory("Show the latest 3 products.");
 
-        Assert.Single(history.Where(m => m.Role == ChatRole.User));
-        Assert.Equal(1, history.Count(m =>
-            m.Text.Contains(CrmAiMetadataCatalogService.BeginMarker, StringComparison.Ordinal)));
+        Assert.Single(history, m => m.Role == ChatRole.User);
+        Assert.Equal(1, history.Count(m => m.Role == ChatRole.System));
+        Assert.DoesNotContain(
+            history,
+            m => m.Text.Contains(CrmAiMetadataCatalogService.BeginMarker, StringComparison.Ordinal));
+        _ = CreateCatalog(["account", "product", "salesorder"]);
     }
 }

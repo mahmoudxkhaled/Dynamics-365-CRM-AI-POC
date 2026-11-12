@@ -3,8 +3,10 @@ using System.Text.Json;
 using CrmAiPoc.Api.Ai;
 using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Dynamics;
+using CrmAiPoc.Api.Crm.FetchXml;
 using CrmAiPoc.Api.Crm.Generic;
 using CrmAiPoc.Api.Crm.Metadata;
+using CrmAiPoc.Api.Crm.Metadata.Discovery;
 using CrmAiPoc.Api.Models;
 using CrmAiPoc.Api.Security;
 using Microsoft.Extensions.AI;
@@ -90,12 +92,13 @@ public sealed class LiveFullApprovedMetadataPocTests
         services.AddSingleton<DynamicsCrmHttp>();
         services.AddSingleton<DynamicsConnectivityService>();
         services.AddSingleton<ICrmMetadataService, DynamicsCrmMetadataService>();
-        services.AddSingleton<IGenericCrmQueryBuilder, GenericCrmQueryBuilder>();
-        services.AddSingleton<FetchXmlAggregateBuilder>();
         services.AddSingleton<ICrmAuthorizationService, CrmAuthorizationService>();
-        services.AddSingleton<IGenericCrmRepository, DynamicsGenericCrmRepository>();
+        services.AddSingleton(Options.Create(new AggregatePartitionOptions()));
+        services.AddSingleton<FetchXmlSafetyValidator>();
+        services.AddSingleton<FetchXmlAggregatePartitionRecovery>();
+        services.AddSingleton<IFetchXmlQueryExecutor, FetchXmlQueryExecutor>();
         services.AddSingleton<ICrmAiMetadataCatalogService, CrmAiMetadataCatalogService>();
-        LiveSemanticDiRegistration.AddSemanticMetadataRetrieval(services);
+        services.AddSingleton<CrmSchemaDiscoveryService>();
         services.AddSingleton<LazyGroqChatClient>();
         services.AddSingleton<RecordingChatClient>();
         services.AddSingleton<IChatClient>(sp => sp.GetRequiredService<RecordingChatClient>());
@@ -461,3 +464,4 @@ public sealed class LiveFullApprovedMetadataPocTests
         public void Dispose() => _inner.Dispose();
     }
 }
+

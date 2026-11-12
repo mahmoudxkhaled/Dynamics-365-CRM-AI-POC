@@ -1,0 +1,15 @@
+---
+description: Manual testing only — do not create or run automated tests unless explicitly requested
+alwaysApply: true
+---
+
+# Testing Policy — Manual Testing Only
+
+1. Do NOT create, generate, modify, or execute any test cases unless the user explicitly requests it.
+2. Do NOT automatically create unit, integration, or E2E tests; test files/classes/mocks/fixtures; or test plans/scenarios.
+3. Do NOT run `dotnet test`, `npm test`, `ng test`, or any other test command unless explicitly instructed.
+4. The user is responsible for manually testing all changes. Do not treat testing as part of implementation tasks.
+5. Focus only on implementing the requested functionality. Avoid unnecessary code, refactoring, files, or features outside scope.
+6. Build/compilation checks are allowed when needed to catch compile errors. Do not run automated tests.
+7. After a task, summarize: changes made, files modified, and brief considerations for manual testing. Do not generate test cases or detailed testing instructions unless requested.
+8. Do not override this policy unless the user explicitly authorizes testing.

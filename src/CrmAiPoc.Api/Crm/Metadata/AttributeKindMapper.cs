@@ -34,20 +34,23 @@ public static class AttributeKindMapper
     {
         CrmAttributeKind.String or CrmAttributeKind.Memo =>
         [
-            CrmFilterOperator.Eq, CrmFilterOperator.Ne, CrmFilterOperator.Contains
+            CrmFilterOperator.Eq, CrmFilterOperator.Ne, CrmFilterOperator.Contains,
+            CrmFilterOperator.Null, CrmFilterOperator.NotNull
         ],
         CrmAttributeKind.Integer or CrmAttributeKind.Decimal or CrmAttributeKind.Money or CrmAttributeKind.DateTime =>
         [
             CrmFilterOperator.Eq, CrmFilterOperator.Ne,
-            CrmFilterOperator.Gt, CrmFilterOperator.Ge, CrmFilterOperator.Lt, CrmFilterOperator.Le
+            CrmFilterOperator.Gt, CrmFilterOperator.Ge, CrmFilterOperator.Lt, CrmFilterOperator.Le,
+            CrmFilterOperator.Null, CrmFilterOperator.NotNull
         ],
         CrmAttributeKind.Boolean or CrmAttributeKind.Picklist or CrmAttributeKind.Status or CrmAttributeKind.State
             or CrmAttributeKind.Guid or CrmAttributeKind.Uniqueidentifier
             or CrmAttributeKind.Lookup or CrmAttributeKind.Customer or CrmAttributeKind.Owner =>
         [
-            CrmFilterOperator.Eq, CrmFilterOperator.Ne
+            CrmFilterOperator.Eq, CrmFilterOperator.Ne,
+            CrmFilterOperator.Null, CrmFilterOperator.NotNull
         ],
-        _ => [CrmFilterOperator.Eq]
+        _ => [CrmFilterOperator.Eq, CrmFilterOperator.Null, CrmFilterOperator.NotNull]
     };
 
     public static bool IsTypicallySortable(CrmAttributeKind kind) =>

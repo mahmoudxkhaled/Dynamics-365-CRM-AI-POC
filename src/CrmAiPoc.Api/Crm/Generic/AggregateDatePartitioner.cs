@@ -1,24 +1,21 @@
 using System.Globalization;
-using CrmAiPoc.Api.Crm.Query;
 
 namespace CrmAiPoc.Api.Crm.Generic;
 
 /// <summary>
-/// Builds non-overlapping half-open [start, end) createdon partitions for Dynamics
+/// Builds non-overlapping half-open [start, end) date partitions for Dynamics
 /// AggregateQueryRecordLimit (0x8004E023) recovery. Never overlaps; never silently truncates.
 /// </summary>
 public static class AggregateDatePartitioner
 {
     public const int MaxMonthPartitions = 120;
+    public const int MaxDayPartitions = 62;
 
     public readonly record struct Partition(
         DateTimeOffset StartInclusiveUtc,
         DateTimeOffset EndExclusiveUtc,
         string Label);
 
-    /// <summary>
-    /// Calendar-year partitions covering [minUtc, maxUtc] in the business timezone.
-    /// </summary>
     public static IReadOnlyList<Partition> BuildYearPartitions(
         DateTimeOffset minUtc,
         DateTimeOffset maxUtc,
@@ -31,10 +28,8 @@ public static class AggregateDatePartitioner
 
         var localMin = TimeZoneInfo.ConvertTime(minUtc, businessTz);
         var localMax = TimeZoneInfo.ConvertTime(maxUtc, businessTz);
-        var yearStart = new DateTime(localMin.Year, 1, 1, 0, 0, 0, DateTimeKind.Unspecified);
-        var lastYear = localMax.Year;
         var list = new List<Partition>();
-        for (var y = yearStart.Year; y <= lastYear; y++)
+        for (var y = localMin.Year; y <= localMax.Year; y++)
         {
             var startLocal = new DateTime(y, 1, 1, 0, 0, 0, DateTimeKind.Unspecified);
             var endLocal = startLocal.AddYears(1);
@@ -45,8 +40,46 @@ public static class AggregateDatePartitioner
     }
 
     /// <summary>
-    /// Calendar-month partitions covering a single year partition window.
+    /// Coarse half-open multi-year chunks covering [min,max] without gaps or overlaps.
+    /// Used when a long CRM history would otherwise create dozens of single-year probes.
     /// </summary>
+    public static IReadOnlyList<Partition> BuildMultiYearChunkPartitions(
+        DateTimeOffset minUtc,
+        DateTimeOffset maxUtc,
+        TimeZoneInfo businessTz,
+        int yearsPerChunk)
+    {
+        var years = BuildYearPartitions(minUtc, maxUtc, businessTz);
+        if (years.Count == 0)
+        {
+            return years;
+        }
+
+        var chunkSize = Math.Clamp(yearsPerChunk, 1, 20);
+        if (years.Count <= chunkSize)
+        {
+            return years;
+        }
+
+        var list = new List<Partition>();
+        for (var i = 0; i < years.Count; i += chunkSize)
+        {
+            var take = Math.Min(chunkSize, years.Count - i);
+            var first = years[i];
+            var last = years[i + take - 1];
+            var startYear = TimeZoneInfo.ConvertTime(first.StartInclusiveUtc, businessTz).Year;
+            var endYearExclusive = TimeZoneInfo.ConvertTime(last.EndExclusiveUtc, businessTz).Year;
+            list.Add(new Partition(
+                first.StartInclusiveUtc,
+                last.EndExclusiveUtc,
+                take == 1
+                    ? first.Label
+                    : $"years {startYear}-{endYearExclusive - 1}"));
+        }
+
+        return list;
+    }
+
     public static IReadOnlyList<Partition> BuildMonthPartitions(
         Partition yearPartition,
         TimeZoneInfo businessTz)
@@ -55,10 +88,6 @@ public static class AggregateDatePartitioner
         var localEnd = TimeZoneInfo.ConvertTime(yearPartition.EndExclusiveUtc, businessTz);
         var cursor = new DateTime(localStart.Year, localStart.Month, 1, 0, 0, 0, DateTimeKind.Unspecified);
         var end = new DateTime(localEnd.Year, localEnd.Month, 1, 0, 0, 0, DateTimeKind.Unspecified);
-        if (localEnd > end)
-        {
-            // end is exclusive; if end is Jan 1 next year, months run through Dec.
-        }
 
         var list = new List<Partition>();
         while (cursor < end && list.Count < MaxMonthPartitions)
@@ -71,18 +100,38 @@ public static class AggregateDatePartitioner
         return list;
     }
 
-    /// <summary>
-    /// Whether the plan's aggregates can be exactly merged across partitions.
-    /// AVG cannot be merged without per-partition counts of the averaged field.
-    /// </summary>
-    public static bool CanMergeExactly(CrmQueryPlan plan)
+    public static IReadOnlyList<Partition> BuildDayPartitions(
+        Partition monthPartition,
+        TimeZoneInfo businessTz)
     {
-        if (plan.Aggregates.Count == 0)
+        var localStart = TimeZoneInfo.ConvertTime(monthPartition.StartInclusiveUtc, businessTz);
+        var localEnd = TimeZoneInfo.ConvertTime(monthPartition.EndExclusiveUtc, businessTz);
+        var cursor = new DateTime(localStart.Year, localStart.Month, localStart.Day, 0, 0, 0, DateTimeKind.Unspecified);
+        var end = new DateTime(localEnd.Year, localEnd.Month, localEnd.Day, 0, 0, 0, DateTimeKind.Unspecified);
+
+        var list = new List<Partition>();
+        while (cursor < end && list.Count < MaxDayPartitions)
+        {
+            var next = cursor.AddDays(1);
+            list.Add(ToPartition(cursor, next, businessTz, $"day {cursor:yyyy-MM-dd}"));
+            cursor = next;
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// Whether aggregate functions can be exactly merged across partitions.
+    /// AVG requires companion count/sum statistics and is refused without them.
+    /// </summary>
+    public static bool CanMergeExactly(IReadOnlyList<CrmAggregateSpec> aggregates)
+    {
+        if (aggregates.Count == 0)
         {
             return false;
         }
 
-        return plan.Aggregates.All(a =>
+        return aggregates.All(a =>
             a.Function is CrmAggregateFunction.Count
                 or CrmAggregateFunction.Sum
                 or CrmAggregateFunction.Min
@@ -91,9 +140,9 @@ public static class AggregateDatePartitioner
 
     public static IReadOnlyList<IReadOnlyDictionary<string, object?>> MergePartitionRows(
         IReadOnlyList<IReadOnlyList<IReadOnlyDictionary<string, object?>>> partitions,
-        CrmQueryPlan plan)
+        IReadOnlyList<CrmAggregateSpec> aggregates,
+        IReadOnlyList<string> groupAliases)
     {
-        var groupAliases = plan.GroupBy.Select(g => g.Alias).ToArray();
         var merged = new Dictionary<string, Dictionary<string, object?>>(StringComparer.Ordinal);
 
         foreach (var rows in partitions)
@@ -111,36 +160,44 @@ public static class AggregateDatePartitioner
                             target[alias] = g;
                         }
 
-                        var labelKey = alias + "_label";
-                        if (row.TryGetValue(labelKey, out var label))
-                        {
-                            target[labelKey] = label;
-                        }
+                        CopyCompanion(row, target, alias + "_label");
+                        CopyCompanion(row, target, alias + "_formatted");
+                        CopyCompanion(row, target, alias + "@OData.Community.Display.V1.FormattedValue");
                     }
 
                     merged[key] = target;
                 }
 
-                foreach (var agg in plan.Aggregates)
+                foreach (var agg in aggregates)
                 {
                     MergeAggregateValue(target, row, agg);
                 }
             }
         }
 
-        // Preserve empty group-less aggregate (single total row) when all partitions empty.
-        if (merged.Count == 0 && groupAliases.Length == 0)
+        if (merged.Count == 0 && groupAliases.Count == 0)
         {
             var empty = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-            foreach (var agg in plan.Aggregates)
+            foreach (var agg in aggregates)
             {
-                empty[agg.Alias] = agg.Function is CrmAggregateFunction.Count ? 0 : 0m;
+                empty[agg.Alias] = agg.Function is CrmAggregateFunction.Count ? 0L : 0m;
             }
 
             return [empty];
         }
 
         return merged.Values.ToArray();
+    }
+
+    private static void CopyCompanion(
+        IReadOnlyDictionary<string, object?> source,
+        IDictionary<string, object?> target,
+        string key)
+    {
+        if (source.TryGetValue(key, out var value) && !target.ContainsKey(key))
+        {
+            target[key] = value;
+        }
     }
 
     private static void MergeAggregateValue(
@@ -170,7 +227,7 @@ public static class AggregateDatePartitioner
         }
     }
 
-    private static string BuildGroupKey(
+    internal static string BuildGroupKey(
         IReadOnlyDictionary<string, object?> row,
         IReadOnlyList<string> groupAliases)
     {
@@ -179,10 +236,11 @@ public static class AggregateDatePartitioner
             return "__total__";
         }
 
+        // Prefer raw identity/value fields over formatted display companions.
         return string.Join('\u001f', groupAliases.Select(a =>
             row.TryGetValue(a, out var v) && v is not null
-                ? Convert.ToString(v, CultureInfo.InvariantCulture) ?? ""
-                : ""));
+                ? Convert.ToString(v, CultureInfo.InvariantCulture) ?? string.Empty
+                : string.Empty));
     }
 
     private static Partition ToPartition(
@@ -217,6 +275,7 @@ public static class AggregateDatePartitioner
         int i => i,
         long l => l,
         double db => (decimal)db,
+        float f => (decimal)f,
         string s when decimal.TryParse(s, NumberStyles.Number, CultureInfo.InvariantCulture, out var p) => p,
         _ => 0m
     };

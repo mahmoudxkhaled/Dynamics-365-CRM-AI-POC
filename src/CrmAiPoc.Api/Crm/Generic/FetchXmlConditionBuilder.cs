@@ -62,8 +62,40 @@ public static class FetchXmlConditionBuilder
         CrmFilterOperator.Ge => "ge",
         CrmFilterOperator.Lt => "lt",
         CrmFilterOperator.Le => "le",
+        CrmFilterOperator.Null => "null",
+        CrmFilterOperator.NotNull => "not-null",
         _ => "eq"
     };
+
+    /// <summary>
+    /// Builds a FetchXML condition element. Valueless for null/not-null.
+    /// Optional <paramref name="entityNameAlias"/> emits post-join <c>entityname</c>.
+    /// </summary>
+    public static XElement CreateConditionElement(
+        string attributeLogicalName,
+        string fetchOperator,
+        string? value = null,
+        string? entityNameAlias = null)
+    {
+        var condition = new XElement(
+            "condition",
+            new XAttribute("attribute", attributeLogicalName),
+            new XAttribute("operator", fetchOperator));
+
+        if (!string.IsNullOrWhiteSpace(entityNameAlias))
+        {
+            condition.Add(new XAttribute("entityname", entityNameAlias));
+        }
+
+        if (!string.IsNullOrEmpty(value) &&
+            !fetchOperator.Equals("null", StringComparison.OrdinalIgnoreCase) &&
+            !fetchOperator.Equals("not-null", StringComparison.OrdinalIgnoreCase))
+        {
+            condition.Add(new XAttribute("value", value));
+        }
+
+        return condition;
+    }
 
     public static (bool Success, string? Error, List<XElement>? Conditions, string? Summary) BuildRelativeDate(
         CrmEntityMetadata entity,
@@ -109,11 +141,12 @@ public static class FetchXmlConditionBuilder
 
     public static (bool Success, string? Error, XElement? Condition, string? Summary) BuildFilter(
         CrmEntityMetadata entity,
-        CrmQueryFilter filter)
+        CrmQueryFilter filter,
+        string? entityNameAlias = null)
     {
-        if (string.IsNullOrWhiteSpace(filter.Field) || string.IsNullOrWhiteSpace(filter.Value))
+        if (string.IsNullOrWhiteSpace(filter.Field))
         {
-            return (false, "Each filter requires field and value.", null, null);
+            return (false, "Each filter requires field.", null, null);
         }
 
         if (!entity.TryGetAttribute(filter.Field, out var field) || !field.IsFilterable)
@@ -124,6 +157,30 @@ public static class FetchXmlConditionBuilder
         if (!field.AllowedOperators.Contains(filter.Operator))
         {
             return (false, $"Operator '{filter.Operator}' is not allowed for '{field.LogicalName}'.", null, null);
+        }
+
+        if (CrmQueryFilter.IsValuelessOperator(filter.Operator))
+        {
+            if (!string.IsNullOrWhiteSpace(filter.Value))
+            {
+                return (false,
+                    $"Operator '{filter.Operator}' must not include a value (field '{field.LogicalName}').",
+                    null,
+                    null);
+            }
+
+            var nullOp = MapCompareOp(filter.Operator);
+            var nullSummary = string.IsNullOrWhiteSpace(entityNameAlias)
+                ? $"{field.LogicalName} {nullOp}"
+                : $"{entityNameAlias}.{field.LogicalName} {nullOp} (post-join)";
+            return (true, null,
+                CreateConditionElement(field.LogicalName, nullOp, entityNameAlias: entityNameAlias),
+                nullSummary);
+        }
+
+        if (string.IsNullOrWhiteSpace(filter.Value))
+        {
+            return (false, "Each filter requires field and value.", null, null);
         }
 
         if (filter.Operator == CrmFilterOperator.Contains && !field.IsSearchable)
@@ -232,12 +289,14 @@ public static class FetchXmlConditionBuilder
                 return (false, $"Unsupported field type for '{field.LogicalName}'.", null, null);
         }
 
-        var condition = new XElement(
-            "condition",
-            new XAttribute("attribute", field.LogicalName),
-            new XAttribute("operator", fetchOp),
-            new XAttribute("value", value));
-        return (true, null, condition, summary);
+        if (!string.IsNullOrWhiteSpace(entityNameAlias))
+        {
+            summary = $"{entityNameAlias}.{summary} (post-join)";
+        }
+
+        return (true, null,
+            CreateConditionElement(field.LogicalName, fetchOp, value, entityNameAlias),
+            summary);
     }
 
     public static (bool Success, string? Error, XElement? Condition, string? Summary) BuildRelationshipCondition(

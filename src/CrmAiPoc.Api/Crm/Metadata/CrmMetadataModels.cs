@@ -80,6 +80,8 @@ public sealed class CrmAttributeMetadata
     public required string LogicalName { get; init; }
     public required string ODataPropertyName { get; init; }
     public string? DisplayName { get; init; }
+    /// <summary>Localized attribute description when Dynamics metadata provides one.</summary>
+    public string? Description { get; init; }
     public required CrmAttributeKind Kind { get; init; }
     public string? AttributeTypeName { get; init; }
     public bool IsValidForRead { get; init; } = true;
@@ -122,5 +124,9 @@ public enum CrmFilterOperator
     Ge,
     Lt,
     Le,
-    Contains
+    Contains,
+    /// <summary>FetchXML operator="null" — no value.</summary>
+    Null,
+    /// <summary>FetchXML operator="not-null" — no value.</summary>
+    NotNull
 }

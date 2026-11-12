@@ -1,0 +1,67 @@
+---
+description: Enforce clean, simple, readable, and maintainable code without unnecessary complexity or overengineering.
+alwaysApply: true
+---
+
+# Clean Code & Simplicity Rules
+
+## 1. Keep Code Simple
+- Always prefer the simplest solution that correctly solves the problem.
+- Write clean, readable, and easy-to-understand code.
+- Avoid overengineering and unnecessary complexity.
+- Do not use advanced programming techniques unless they provide a clear benefit.
+- Prefer straightforward, explicit implementations over clever or complicated solutions.
+
+## 2. Avoid Unnecessary Abstractions
+- Do not introduce unnecessary interfaces, services, factories, wrappers, or design patterns.
+- Do not create extra classes or files for small functionality.
+- Reuse existing services, methods, and abstractions whenever possible.
+- Only introduce new abstractions when they solve a real problem or significantly improve maintainability.
+- Avoid excessive layers of architecture.
+
+## 3. Follow Existing Project Architecture
+- Inspect the relevant existing code before making changes.
+- Respect the current project structure, conventions, and coding style.
+- Do not redesign or refactor unrelated parts of the application.
+- Make minimal, focused changes.
+- Avoid adding unnecessary NuGet or npm packages.
+
+## 4. Readability First
+- Use clear and meaningful names for variables, methods, and classes.
+- Keep methods focused and reasonably short.
+- Prefer simple conditions and early returns over deeply nested logic.
+- Avoid unnecessary LINQ complexity, reflection, metaprogramming, or advanced generics.
+- Do not use complicated one-liners when simple code is easier to understand.
+- Add comments only when they explain important business logic or non-obvious decisions.
+
+## 5. Easy to Explain
+- Write code that a mid-level .NET or Angular developer can easily understand.
+- Every implementation should be easy to explain during a code review or technical presentation.
+- If two solutions provide similar results, choose the simpler one.
+- Do not sacrifice clarity for theoretical flexibility or future requirements.
+- Implement only what is currently requested.
+
+## 6. Maintain Quality
+- Simplicity must not compromise correctness, security, performance, or error handling.
+- Use async/await, dependency injection, validation, and exception handling where appropriate.
+- Avoid duplicated business logic.
+- Do not hide errors or introduce silent fallbacks.
+- Follow standard C#, ASP.NET Core, Angular, and TypeScript practices.
+
+## 7. No Speculative Features
+- Do not implement features that might be needed in the future.
+- Do not add unnecessary configuration options.
+- Do not introduce generic frameworks for a single use case.
+- Avoid premature optimization.
+- Keep the implementation focused on the current requirements.
+
+## 8. Response Guidelines
+After completing a task:
+- Briefly explain what changed and why.
+- Mention the main files modified.
+- Explain any important technical decisions in simple language.
+- Avoid lengthy explanations unless requested.
+
+## Core Principle
+
+**Write the simplest clean code that solves the problem correctly. Prefer readability and maintainability over architectural complexity.**

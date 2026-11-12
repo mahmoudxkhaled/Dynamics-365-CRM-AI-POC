@@ -1,13 +1,7 @@
 import { CrmStructuredData, CrmTableColumn, ResolvedCell } from '../models/crm-table.model';
 
-const HIDDEN_KEYS = new Set([
-  'salesorderid',
-  'accountid',
-  'contactid',
-  'leadid',
-  '@odata.etag',
-  'odata.etag'
-]);
+/** Non-data annotation keys only — never hardcode entity primary-id names. */
+const HIDDEN_KEYS = new Set(['@odata.etag', 'odata.etag']);
 
 const COLUMN_PRIORITY = [
   'name',
@@ -55,19 +49,62 @@ export function isGuidLike(value: unknown): boolean {
   );
 }
 
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December'
+];
+
 export function formatCell(key: string, value: unknown, kind?: string): string {
   if (value === null || value === undefined || value === '') {
     return '—';
   }
   const kindNorm = String(kind || '').toLowerCase();
-  if (
-    ['lookup', 'customer', 'owner', 'uniqueidentifier', 'guid'].includes(kindNorm) ||
-    isGuidLike(value)
-  ) {
+  const keyNorm = String(key || '').toLowerCase();
+
+  // Lookups/owners: display names only. Raw GUIDs without a name are empty placeholders.
+  if (['lookup', 'customer', 'owner'].includes(kindNorm)) {
     if (isGuidLike(value) || (typeof value === 'string' && isGuidLike(String(value)))) {
       return '—';
     }
   }
+
+  // Explicit uniqueidentifier/guid columns: show the real value (never blank a present GUID).
+  if (['uniqueidentifier', 'guid'].includes(kindNorm)) {
+    return String(value);
+  }
+
+  if (kindNorm === 'year' || keyNorm === 'year') {
+    const n = Number(value);
+    if (!Number.isNaN(n)) {
+      return String(Math.trunc(n));
+    }
+  }
+
+  if (kindNorm === 'month' || keyNorm === 'month') {
+    const n = Number(value);
+    if (!Number.isNaN(n) && n >= 1 && n <= 12) {
+      return MONTH_NAMES[n - 1];
+    }
+  }
+
+  if (kindNorm === 'percent' || /percent|pct|contribution|share/i.test(keyNorm)) {
+    const n = Number(value);
+    if (!Number.isNaN(n)) {
+      const text = Number.isInteger(n) ? String(n) : (Math.round(n * 100) / 100).toFixed(2);
+      return `${text}%`;
+    }
+  }
+
   if (
     kindNorm === 'money' ||
     (typeof value === 'number' && /amount|price|revenue|total/i.test(key || ''))
@@ -95,6 +132,15 @@ export function formatCell(key: string, value: unknown, kind?: string): string {
       return 'false';
     }
   }
+  if (kindNorm === 'integer' || kindNorm === 'decimal') {
+    const n = Number(value);
+    if (!Number.isNaN(n)) {
+      if (kindNorm === 'integer' || Number.isInteger(n)) {
+        return Math.trunc(n).toLocaleString();
+      }
+      return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+    }
+  }
   if (typeof value === 'number') {
     return value.toLocaleString();
   }
@@ -109,6 +155,28 @@ export function resolveCellValue(
     return { value: null, kind: column?.kind };
   }
   const key = column.key;
+  const kindNorm = String(column.kind || '').toLowerCase();
+
+  // Prefer Dynamics formatted annotations for lookups before raw GUID values.
+  if (['lookup', 'customer', 'owner'].includes(kindNorm)) {
+    const formattedKey = `${key}_formatted`;
+    if (
+      Object.prototype.hasOwnProperty.call(row, formattedKey) &&
+      row[formattedKey] != null &&
+      row[formattedKey] !== ''
+    ) {
+      return { value: row[formattedKey], kind: column.kind };
+    }
+    if (
+      column.logicalName &&
+      Object.prototype.hasOwnProperty.call(row, `${column.logicalName}_formatted`) &&
+      row[`${column.logicalName}_formatted`] != null &&
+      row[`${column.logicalName}_formatted`] !== ''
+    ) {
+      return { value: row[`${column.logicalName}_formatted`], kind: column.kind };
+    }
+  }
+
   if (Object.prototype.hasOwnProperty.call(row, key) && row[key] != null && row[key] !== '') {
     return { value: row[key], kind: column.kind };
   }
@@ -155,7 +223,16 @@ export function niceHeader(key: string): string {
     jobtitle: 'Job title',
     jobTitle: 'Job title',
     address1_city: 'City',
-    address1_country: 'Country'
+    address1_country: 'Country',
+    year: 'Year',
+    month: 'Month',
+    record_count: 'Count',
+    ordercount: 'Count',
+    count: 'Count',
+    cnt: 'Count',
+    pct: 'Contribution (%)',
+    percentoftotal: 'Contribution (%)',
+    contribution: 'Contribution (%)'
   };
   return (
     map[key] ||
@@ -190,16 +267,56 @@ export function normalizeMetadataColumns(
     }));
 }
 
-export function pickColumns(rows: Record<string, unknown>[]): CrmTableColumn[] {
+function isIdentityColumn(c: CrmTableColumn, primaryIdAttribute?: string | null): boolean {
+  const kind = String(c.kind || '').toLowerCase();
+  if (kind === 'uniqueidentifier' || kind === 'guid') {
+    return true;
+  }
+  const pid = String(primaryIdAttribute || '')
+    .trim()
+    .toLowerCase();
+  if (!pid) {
+    return false;
+  }
+  return (
+    String(c.key || '').toLowerCase() === pid ||
+    String(c.logicalName || '').toLowerCase() === pid
+  );
+}
+
+export function dropIdentityDisplayColumns(
+  cols: CrmTableColumn[],
+  primaryIdAttribute?: string | null
+): CrmTableColumn[] {
+  return cols.filter((c) => !isIdentityColumn(c, primaryIdAttribute));
+}
+
+export function pickColumns(
+  rows: Record<string, unknown>[],
+  primaryIdAttribute?: string | null
+): CrmTableColumn[] {
   if (!rows.length) {
     return [];
   }
+  const pid = String(primaryIdAttribute || '')
+    .trim()
+    .toLowerCase();
   const keys = new Set<string>();
   rows.forEach((row) =>
     Object.keys(row || {}).forEach((k) => {
-      if (!HIDDEN_KEYS.has(k.toLowerCase()) && !k.startsWith('@') && !k.endsWith('_formatted')) {
-        keys.add(k);
+      const lower = k.toLowerCase();
+      if (HIDDEN_KEYS.has(lower) || k.startsWith('@') || k.endsWith('_formatted') || k.endsWith('_label')) {
+        return;
       }
+      if (pid && lower === pid) {
+        return;
+      }
+      // Skip raw GUID-only keys when falling back without backend column metadata.
+      const sample = row[k];
+      if (isGuidLike(sample)) {
+        return;
+      }
+      keys.add(k);
     })
   );
   const preferred = COLUMN_PRIORITY.filter((k) => [...keys].some((x) => x.toLowerCase() === k));
@@ -227,37 +344,39 @@ export function pickColumns(rows: Record<string, unknown>[]): CrmTableColumn[] {
   }));
 }
 
-export function columnClass(column: CrmTableColumn, sampleText: string): string {
+/**
+ * Metadata/type-driven column CSS. Headers and cells share the same class so alignment matches.
+ * Empty placeholders keep the type alignment (do not switch to a separate empty alignment).
+ */
+export function columnClass(column: CrmTableColumn, _sampleText?: string): string {
   const kind = String(column.kind || '').toLowerCase();
   const key = `${column.key || ''} ${column.logicalName || ''}`;
-  if (['money', 'integer', 'decimal'].includes(kind)) {
-    return 'col-num';
-  }
-  if (['datetime', 'boolean', 'status', 'state', 'picklist'].includes(kind)) {
-    return '';
-  }
-  if (/amount|price|revenue|total/i.test(key)) {
-    return 'col-num';
-  }
+
   if (
-    /name|fullname|email|job|city|country|subject|description/i.test(key) ||
-    kind === 'string' ||
-    kind === 'memo'
+    ['money', 'integer', 'decimal', 'double', 'bigint', 'percent', 'year', 'month', 'quarter', 'week', 'day'].includes(
+      kind
+    )
   ) {
-    return 'col-text';
+    return 'col-num';
   }
-  if (sampleText === '—' || sampleText === '') {
-    return 'col-empty';
+  if (['datetime', 'date'].includes(kind)) {
+    return 'col-date';
   }
-  return '';
+  if (['boolean', 'status', 'state', 'picklist'].includes(kind)) {
+    return 'col-choice';
+  }
+  if (/amount|price|revenue|total|count|pct|percent|sum|avg/i.test(key) && !['string', 'memo', 'datetime'].includes(kind)) {
+    return 'col-num';
+  }
+  // text, memo, lookup, customer, owner, string, and unknown → left
+  return 'col-text';
 }
 
 function isLookupishColumn(c: CrmTableColumn): boolean {
   const kind = String(c.kind || '').toLowerCase();
   return (
-    ['lookup', 'customer', 'owner', 'uniqueidentifier', 'guid'].includes(kind) ||
-    /_value$/i.test(c.key || '') ||
-    /customerid|parentcustomer/i.test(`${c.key || ''} ${c.logicalName || ''}`)
+    ['lookup', 'customer', 'owner'].includes(kind) ||
+    /_value$/i.test(c.key || '')
   );
 }
 
@@ -314,17 +433,25 @@ export function resolveDisplayColumns(
   rows: Record<string, unknown>[]
 ): CrmTableColumn[] {
   const metaCols = normalizeMetadataColumns(structured);
-  let cols = metaCols && metaCols.length ? metaCols : pickColumns(rows);
+  const primaryId = structured?.primaryIdAttribute ?? null;
+  let cols = metaCols && metaCols.length ? metaCols : pickColumns(rows, primaryId);
   cols = dropAllEmptyLookupColumns(cols, rows);
+
+  const op = (structured?.operation || '').toLowerCase();
+  // List display policy (defense in depth): hide identity GUID columns from the UI.
+  // Aggregates may intentionally group by primary id — keep planned columns.
+  if (op === 'list' || (!op && metaCols)) {
+    cols = dropIdentityDisplayColumns(cols, primaryId);
+  }
+
   if (!cols.length) {
     return [];
   }
+  // Keep backend aggregate column order (Year, Month, Count, Contribution %).
+  if (op === 'aggregate' && metaCols && metaCols.length) {
+    return cols;
+  }
   return prioritizeDisplayColumns(cols);
-}
-
-export function summaryFromReply(reply: string | null | undefined): string {
-  const lines = String(reply || '').split(/\r?\n/);
-  return lines.filter((line) => !/^\s*\d+\.\s+/.test(line)).join('\n').trim();
 }
 
 export function isCountResult(

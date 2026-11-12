@@ -11,13 +11,13 @@
       <tbody>
         @if (empty) {
           <tr>
-            <td class="col-empty" [attr.colspan]="columns.length">No records returned</td>
+            <td class="col-empty" [attr.colspan]="columns.length">No records found.</td>
           </tr>
         } @else {
           @for (row of rows; track $index) {
             <tr>
               @for (cell of row.cells; track $index) {
-                <td [class]="cell.cssClass">{{ cell.text }}</td>
+                <td [class]="cell.cssClass" [attr.title]="cell.title || null">{{ cell.text }}</td>
               }
             </tr>
           }

@@ -1,4 +1,4 @@
-namespace CrmAiPoc.Api.Crm.Metadata.Semantic;
+﻿namespace CrmAiPoc.Api.Crm.Metadata.Semantic;
 
 /// <summary>
 /// Searchable CRM metadata document. Text is embedded; Id references authoritative cache entries.

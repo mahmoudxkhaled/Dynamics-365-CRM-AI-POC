@@ -107,6 +107,28 @@ public static partial class AiProviderFailureClassifier
     public static bool IsTransient(AiProviderFailureKind kind) =>
         kind is AiProviderFailureKind.Http429 or AiProviderFailureKind.Http503;
 
+    /// <summary>
+    /// True when Groq/OpenAI rejected the request because tool_choice required a tool call
+    /// but the model returned none (invalid_request_error / tool_use_failed).
+    /// Unrelated HTTP 400s return false.
+    /// </summary>
+    public static bool IsToolUseFailedWithoutToolCall(Exception ex)
+    {
+        if (Classify(ex) != AiProviderFailureKind.Http400)
+        {
+            return false;
+        }
+
+        var message = ex.Message ?? string.Empty;
+        return ContainsAny(
+            message,
+            "tool_use_failed",
+            "tool choice is required",
+            "did not call a tool",
+            "must call a tool",
+            "required, but model did not");
+    }
+
     public static bool IsProviderLimitMessage(string message) =>
         ContainsAny(
             message,

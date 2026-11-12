@@ -11,6 +11,7 @@ import {
 interface TableCellView {
   text: string;
   cssClass: string;
+  title: string;
 }
 
 interface TableRowView {
@@ -53,9 +54,13 @@ export class CrmResultsTableComponent implements OnChanges {
       cells: cols.map((c) => {
         const resolved = resolveCellValue(row, c);
         const text = formatCell(c.key, resolved.value, resolved.kind || c.kind) || '—';
+        const typeClass = columnClass(c, text);
+        // Keep type alignment for null placeholders; mark empty for secondary styling only.
+        const cssClass = text === '—' ? `${typeClass} col-empty`.trim() : typeClass;
         return {
           text,
-          cssClass: columnClass(c, text)
+          cssClass,
+          title: text === '—' ? '' : text
         };
       })
     }));

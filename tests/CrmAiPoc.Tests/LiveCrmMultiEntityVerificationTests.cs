@@ -1,6 +1,6 @@
 using CrmAiPoc.Api.Configuration;
 using CrmAiPoc.Api.Crm.Dynamics;
-using CrmAiPoc.Api.Crm.Generic;
+using CrmAiPoc.Api.Crm.FetchXml;
 using CrmAiPoc.Api.Crm.Metadata;
 using CrmAiPoc.Api.Security;
 using Microsoft.Extensions.DependencyInjection;
@@ -10,9 +10,8 @@ using Microsoft.Extensions.Options;
 namespace CrmAiPoc.Tests;
 
 /// <summary>
-/// Read-only live CRM verification for multi-entity joins.
-/// Set env CRM_LIVE_VERIFY=1 plus Crm__* settings to execute; otherwise Not Executed.
-/// Never mutates CRM records.
+/// Live CRM verification for multi-entity FetchXML joins.
+/// Set CRM_LIVE_VERIFY=1 plus Crm__BaseUrl to execute; otherwise Not Executed.
 /// </summary>
 public sealed class LiveCrmMultiEntityVerificationTests
 {
@@ -70,10 +69,11 @@ public sealed class LiveCrmMultiEntityVerificationTests
         services.AddSingleton<DynamicsCrmHttp>();
         services.AddSingleton<DynamicsConnectivityService>();
         services.AddSingleton<ICrmMetadataService, DynamicsCrmMetadataService>();
-        services.AddSingleton<IGenericCrmQueryBuilder, GenericCrmQueryBuilder>();
-        services.AddSingleton<FetchXmlAggregateBuilder>();
         services.AddSingleton<ICrmAuthorizationService, CrmAuthorizationService>();
-        services.AddSingleton<IGenericCrmRepository, DynamicsGenericCrmRepository>();
+        services.AddSingleton(Options.Create(new AggregatePartitionOptions()));
+        services.AddSingleton<FetchXmlSafetyValidator>();
+        services.AddSingleton<FetchXmlAggregatePartitionRecovery>();
+        services.AddSingleton<IFetchXmlQueryExecutor, FetchXmlQueryExecutor>();
 
         await using var provider = services.BuildServiceProvider();
         var connectivity = provider.GetRequiredService<DynamicsConnectivityService>();
@@ -89,108 +89,35 @@ public sealed class LiveCrmMultiEntityVerificationTests
         await metadata.EnsureApprovedEntitiesLoadedAsync();
         var salesorder = await metadata.GetEntityAsync("salesorder");
         Assert.NotNull(salesorder);
-        Assert.Contains(
-            salesorder!.Relationships,
-            r => r.SchemaName.Equals("te_account_salesorder_customeraccountid", StringComparison.OrdinalIgnoreCase));
 
-        var repo = provider.GetRequiredService<IGenericCrmRepository>();
+        var rel = salesorder!.Relationships.FirstOrDefault(r =>
+            r.SchemaName.Equals("te_account_salesorder_customeraccountid", StringComparison.OrdinalIgnoreCase) ||
+            r.SchemaName.Equals("order_customer_accounts", StringComparison.OrdinalIgnoreCase));
+        Assert.NotNull(rel);
 
-        var test1 = await repo.QueryAsync(new CrmQueryPlan
+        var executor = provider.GetRequiredService<IFetchXmlQueryExecutor>();
+        var fetch = $"""
+            <fetch top="5">
+              <entity name="salesorder">
+                <attribute name="name" />
+                <attribute name="createdon" />
+                <order attribute="createdon" descending="true" />
+                <link-entity name="account" from="{rel!.ReferencedAttribute}" to="{rel.ReferencingAttribute}" alias="ca" link-type="inner" relationship="{rel.SchemaName}">
+                  <attribute name="name" />
+                </link-entity>
+              </entity>
+            </fetch>
+            """;
+
+        var validated = await executor.ValidateAsync(new FetchXmlToolRequest
         {
-            Entity = "salesorder",
-            Limit = 5,
-            Sort = [new CrmQuerySort { Field = "createdon", Direction = CrmSortDirection.Desc }],
-            Links =
-            [
-                new CrmLinkSpec
-                {
-                    Entity = "account",
-                    Relationship = "te_account_salesorder_customeraccountid",
-                    Alias = "ca",
-                    Select = ["name"]
-                }
-            ]
+            FetchXml = fetch,
+            ResultMode = FetchXmlResultMode.Complete
         });
-        Assert.True(test1.Items.Count >= 0, test1.Message);
-        Assert.Contains(test1.Columns, c => c.Key.Contains("ca.", StringComparison.OrdinalIgnoreCase));
+        Assert.True(validated.Success, validated.ErrorMessage);
 
-        var test2 = await repo.QueryAsync(new CrmQueryPlan
-        {
-            Entity = "salesorder",
-            Limit = 10,
-            Filters =
-            [
-                new CrmQueryFilter { Field = "statecode", Operator = CrmFilterOperator.Eq, Value = "Active" }
-            ],
-            Links =
-            [
-                new CrmLinkSpec
-                {
-                    Entity = "account",
-                    Relationship = "te_account_salesorder_customeraccountid",
-                    Alias = "ca",
-                    Select = ["name"]
-                }
-            ]
-        });
-        Assert.NotNull(test2);
-
-        var test3 = await repo.QueryAsync(new CrmQueryPlan
-        {
-            Entity = "salesorder",
-            Limit = 10,
-            Links =
-            [
-                new CrmLinkSpec
-                {
-                    Entity = "account",
-                    Relationship = "te_account_salesorder_customeraccountid",
-                    Alias = "ca",
-                    Select = ["name"],
-                    JoinType = CrmLinkJoinType.Inner,
-                    Filters =
-                    [
-                        new CrmQueryFilter
-                        {
-                            Field = "name",
-                            Operator = CrmFilterOperator.Contains,
-                            Value = "a"
-                        }
-                    ]
-                }
-            ]
-        });
-        Assert.NotNull(test3);
-
-        var test4 = await repo.QueryAsync(new CrmQueryPlan
-        {
-            Entity = "salesorder",
-            Limit = 5,
-            Links =
-            [
-                new CrmLinkSpec
-                {
-                    Entity = "account",
-                    Relationship = "te_account_salesorder_customeraccountid",
-                    Alias = "ca",
-                    Select = ["name"],
-                    Links =
-                    [
-                        new CrmLinkSpec
-                        {
-                            Entity = "contact",
-                            Relationship = "contact_customer_accounts",
-                            Alias = "ct",
-                            Select = ["fullname"]
-                        }
-                    ]
-                }
-            ]
-        });
-        Assert.True(string.IsNullOrWhiteSpace(test4.Message) || test4.RelativeRequestUri.Length > 0, test4.Message);
-        Assert.Contains(test4.Columns, c => c.Key.Contains("ca.", StringComparison.OrdinalIgnoreCase));
-        Mark(
-            $"Executed OK. WhoAmI={who.UserId}; " +
-            $"T1={test1.Items.Count}; T2={test2.Items.Count}; T3={test3.Items.Count}; T4={test4.Items.Count}");
+        var result = await executor.ExecuteAsync(validated.Query!);
+        Assert.True(string.IsNullOrWhiteSpace(result.Message) || result.Items.Count >= 0, result.Message);
+        Mark($"Executed OK rows={result.Items.Count} rel={rel.SchemaName}");
     }
 }

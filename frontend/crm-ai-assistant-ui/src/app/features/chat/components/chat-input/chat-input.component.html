@@ -1,13 +1,15 @@
 <div class="composer" [class.composer-welcome]="variant === 'welcome'">
   <form (ngSubmit)="onSubmit()">
     <textarea
+      #inputArea
       name="message"
       rows="1"
       [(ngModel)]="message"
-      dir="ltr"
+      [attr.dir]="inputDir"
       [placeholder]="placeholder"
       autocomplete="off"
       aria-label="Message"
+      (input)="onInput()"
       (keydown.enter)="onEnterKey($event)"
     ></textarea>
     <button

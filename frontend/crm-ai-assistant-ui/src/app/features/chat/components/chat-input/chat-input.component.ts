@@ -1,4 +1,4 @@
-import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { Component, ElementRef, EventEmitter, Input, Output, ViewChild } from '@angular/core';
 
 export type ChatInputVariant = 'welcome' | 'conversation';
 
@@ -19,7 +19,14 @@ export class ChatInputComponent {
   @Input() showHints = true;
   @Output() send = new EventEmitter<string>();
 
+  @ViewChild('inputArea') private inputArea?: ElementRef<HTMLTextAreaElement>;
+
   message = '';
+
+  /** Auto direction for Arabic / mixed input; chrome stays LTR. */
+  get inputDir(): 'auto' | 'ltr' {
+    return /[\u0600-\u06FF]/.test(this.message) ? 'auto' : 'ltr';
+  }
 
   /** User may always type; only sending is blocked. */
   get canSend(): boolean {
@@ -31,6 +38,10 @@ export class ChatInputComponent {
       return `${this.cooldownSeconds}s`;
     }
     return 'Send';
+  }
+
+  onInput(): void {
+    this.resizeTextarea();
   }
 
   onEnterKey(event: Event): void {
@@ -49,5 +60,15 @@ export class ChatInputComponent {
     }
     this.send.emit(text);
     this.message = '';
+    queueMicrotask(() => this.resizeTextarea());
+  }
+
+  private resizeTextarea(): void {
+    const el = this.inputArea?.nativeElement;
+    if (!el) {
+      return;
+    }
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
   }
 }

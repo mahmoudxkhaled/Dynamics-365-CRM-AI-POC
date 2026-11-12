@@ -1,10 +1,12 @@
 using CrmAiPoc.Api.Configuration;
+using CrmAiPoc.Api.Crm.Metadata.Discovery;
 using Microsoft.Extensions.Options;
 
 namespace CrmAiPoc.Api.Crm.Metadata;
 
 /// <summary>
-/// Loads approved CRM entity metadata from Dynamics at application startup (background).
+/// Loads approved CRM entity metadata from Dynamics at application startup (background),
+/// then optionally warms the Ollama semantic metadata index (SEM-03).
 /// </summary>
 public sealed class CrmMetadataWarmupHostedService : BackgroundService
 {
@@ -38,9 +40,10 @@ public sealed class CrmMetadataWarmupHostedService : BackgroundService
             var sw = System.Diagnostics.Stopwatch.StartNew();
 
             _logger.LogInformation(
-                "Starting live CRM metadata warm-up for {Count} approved entities: [{Names}]",
+                "Starting live CRM metadata warm-up for {Count} approved entities: [{Names}] " +
+                "(from Crm:ApprovedEntities via EntityApprovalPolicy; excluded entities are not loaded)",
                 policy.ApprovedLogicalNames.Count,
-                string.Join(", ", policy.ApprovedLogicalNames));
+                string.Join(", ", policy.ApprovedLogicalNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase)));
 
             await metadata.EnsureApprovedEntitiesLoadedAsync(stoppingToken);
 
@@ -66,6 +69,8 @@ public sealed class CrmMetadataWarmupHostedService : BackgroundService
                     "Warm-up did not cache live metadata for: [{Missing}]. Queries for those entities will fail until discovery succeeds.",
                     string.Join(", ", missing));
             }
+
+            await WarmSemanticIndexAsync(stoppingToken);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
@@ -74,6 +79,55 @@ public sealed class CrmMetadataWarmupHostedService : BackgroundService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "CRM metadata warm-up failed; chat will attempt on-demand live discovery.");
+        }
+    }
+
+    private async Task WarmSemanticIndexAsync(CancellationToken stoppingToken)
+    {
+        var semantic = _services.GetRequiredService<IOptions<SemanticMetadataOptions>>().Value;
+        if (!semantic.EnableHybridRetrieval || !semantic.WarmIndexOnStartup)
+        {
+            _logger.LogInformation(
+                "Semantic index warm-up skipped (EnableHybridRetrieval={Hybrid}, WarmIndexOnStartup={Warm}).",
+                semantic.EnableHybridRetrieval,
+                semantic.WarmIndexOnStartup);
+            return;
+        }
+
+        try
+        {
+            var ranker = _services.GetRequiredService<HybridMetadataRanker>();
+            var outcome = await ranker.WarmIndexAsync(stoppingToken);
+            var policy = _services.GetRequiredService<EntityApprovalPolicy>();
+            _logger.LogInformation(
+                "Semantic index warm-up summary: Success={Success} State={State} " +
+                "ApprovedEntityCount={ApprovedCount} DocumentCount={DocumentCount} " +
+                "CacheHit={CacheHit} LoadedFromDisk={LoadedFromDisk} Rebuilt={Rebuilt} Reason={Reason}",
+                outcome.Success,
+                outcome.State,
+                policy.ApprovedLogicalNames.Count,
+                outcome.DocumentCount,
+                outcome.CacheHit,
+                outcome.LoadedFromDisk,
+                outcome.Rebuilt,
+                outcome.FailureReason ?? "-");
+            if (!outcome.Success)
+            {
+                _logger.LogWarning(
+                    "Semantic index warm-up did not reach Ready (State={State}, Reason={Reason}). Chat will use lexical fallback until Ollama succeeds.",
+                    outcome.State,
+                    outcome.FailureReason ?? "-");
+            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Semantic index warm-up failed; discover_crm_schema will fall back to lexical until the index is ready.");
         }
     }
 }

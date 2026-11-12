@@ -1,4 +1,4 @@
-namespace CrmAiPoc.Api.Crm.Metadata.Semantic;
+﻿namespace CrmAiPoc.Api.Crm.Metadata.Semantic;
 
 public interface IOllamaEmbeddingClient
 {

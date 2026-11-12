@@ -33,18 +33,35 @@ public static partial class DynamicsCrmErrorParser
             {
                 code = err.TryGetProperty("code", out var c) ? c.GetString() : null;
                 message = err.TryGetProperty("message", out var m) ? m.GetString() : null;
-                if (err.TryGetProperty("innererror", out var inner) &&
-                    inner.TryGetProperty("message", out var im) &&
-                    string.IsNullOrWhiteSpace(message))
+
+                // Prefer the most specific Dynamics message for classification, still sanitized/truncated.
+                if (err.TryGetProperty("innererror", out var inner))
                 {
-                    message = im.GetString();
+                    if (inner.TryGetProperty("message", out var im))
+                    {
+                        var innerMsg = im.GetString();
+                        if (!string.IsNullOrWhiteSpace(innerMsg) &&
+                            (string.IsNullOrWhiteSpace(message) ||
+                             innerMsg!.Length > message!.Length ||
+                             message.Equals("An error has occurred.", StringComparison.OrdinalIgnoreCase) ||
+                             message.Equals("Invalid Argument", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            message = innerMsg;
+                        }
+                    }
+
+                    if (string.IsNullOrWhiteSpace(code) &&
+                        inner.TryGetProperty("code", out var ic))
+                    {
+                        code = ic.GetString();
+                    }
                 }
             }
 
             return new ParsedError
             {
                 Code = NormalizeCode(code),
-                Message = Truncate(message, 240),
+                Message = Truncate(message, 320),
                 IsAggregateQueryRecordLimit = IsAggregateLimit(code, message)
             };
         }

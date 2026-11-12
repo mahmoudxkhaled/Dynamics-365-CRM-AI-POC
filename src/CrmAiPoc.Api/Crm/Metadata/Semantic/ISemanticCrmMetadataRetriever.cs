@@ -1,4 +1,4 @@
-namespace CrmAiPoc.Api.Crm.Metadata.Semantic;
+﻿namespace CrmAiPoc.Api.Crm.Metadata.Semantic;
 
 /// <summary>
 /// Semantic retrieval over approved CRM metadata. Used by ChatService to select the AI catalog.

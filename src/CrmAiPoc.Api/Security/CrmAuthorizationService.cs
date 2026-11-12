@@ -33,9 +33,9 @@ public sealed class CrmAuthorizationService : ICrmAuthorizationService
 
     public AuthorizationDecision AuthorizeRead(string entityLogicalName, string operation)
     {
-        var allowedByLegacy = CrmEntityAllowlist.IsEntityAllowed(entityLogicalName);
-        var allowedByPolicy = _approvalPolicy?.IsApproved(entityLogicalName) == true;
-        if (!allowedByLegacy && !allowedByPolicy)
+        // EntityApprovalPolicy (Crm:ApprovedEntities) is the sole entity allowlist.
+        // Missing policy fails closed — legacy CrmEntityAllowlist must not grant access.
+        if (_approvalPolicy is null || !_approvalPolicy.IsApproved(entityLogicalName))
         {
             var deny = AuthorizationDecision.Deny(
                 $"Entity '{entityLogicalName}' is outside the approved CRM allowlist.",

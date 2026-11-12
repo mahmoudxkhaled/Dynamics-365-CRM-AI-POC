@@ -195,6 +195,7 @@ public static class CrmRelationshipDiscovery
             JoinType = link.JoinType,
             Select = select,
             Filters = link.Filters,
+            PostJoinFilters = link.PostJoinFilters,
             Links = nested
         };
 
@@ -747,6 +748,7 @@ public static class CrmRelationshipDiscovery
             RelatedFromId = plan.RelatedFromId,
             Aggregates = plan.Aggregates,
             GroupBy = plan.GroupBy,
+            CalculatedMetrics = plan.CalculatedMetrics,
             Links = links
         };
 

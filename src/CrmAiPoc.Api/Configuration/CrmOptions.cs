@@ -118,7 +118,9 @@ public sealed class CrmOptions
             ["te_account_salesorder_calculated"] = "Calculated Account",
             ["contact_customer_accounts"] = "Account Contacts",
             ["account_primary_contact"] = "Primary Contact",
-            ["order_customer_contacts"] = "Potential Customer (Contact)"
+            ["order_customer_contacts"] = "Potential Customer (Contact)",
+            ["te_contact_salesorder_billingcontactid"] = "Billing Contact",
+            ["te_contact_salesorder_technicalcontactid"] = "Technical Contact"
         };
 
     public bool HasExplicitNetworkCredentials =>

@@ -10,5 +10,14 @@ public interface ICrmMetadataService
 
     Task RefreshAsync(string? logicalName = null, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Lazily loads OptionSet / Boolean choice labels and numeric values for a single attribute.
+    /// Uses a type-specific Dynamics metadata cast. Does not load options for unrelated fields.
+    /// </summary>
+    Task<AttributeOptionsResult> EnsureAttributeOptionsAsync(
+        string entityLogicalName,
+        string attributeLogicalName,
+        CancellationToken cancellationToken = default);
+
     string GetAiCatalogSummary();
 }

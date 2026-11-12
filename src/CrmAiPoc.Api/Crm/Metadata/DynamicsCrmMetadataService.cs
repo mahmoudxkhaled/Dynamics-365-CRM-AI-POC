@@ -20,10 +20,13 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _failedDiscoveryUtc =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, (DateTimeOffset At, string Reason)> _optionSetFailures =
+        new(StringComparer.OrdinalIgnoreCase);
     private DateTimeOffset _lastFullLoadUtc = DateTimeOffset.MinValue;
     private bool _fullRefreshAttempted;
     private int _backgroundRefreshRunning;
     private static readonly TimeSpan DiscoveryFailureCooldown = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan OptionSetFailureCooldown = TimeSpan.FromMinutes(5);
 
     public DynamicsCrmMetadataService(
         DynamicsCrmHttp http,
@@ -124,6 +127,116 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
         _ = cancellationToken;
         // Live cache only — never invent entities that Dynamics has not returned.
         return Task.FromResult(_registry.GetApproved());
+    }
+
+    public async Task<AttributeOptionsResult> EnsureAttributeOptionsAsync(
+        string entityLogicalName,
+        string attributeLogicalName,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(entityLogicalName) || string.IsNullOrWhiteSpace(attributeLogicalName))
+        {
+            return new AttributeOptionsResult
+            {
+                Error = "Entity and attribute logical names are required."
+            };
+        }
+
+        var entity = await GetEntityAsync(entityLogicalName, cancellationToken);
+        if (entity is null || !entity.TryGetAttribute(attributeLogicalName, out var attr))
+        {
+            return new AttributeOptionsResult
+            {
+                Error = $"Attribute '{attributeLogicalName}' was not found on approved entity '{entityLogicalName}'."
+            };
+        }
+
+        if (!IsChoiceAttributeKind(attr.Kind))
+        {
+            return new AttributeOptionsResult
+            {
+                Attribute = attr,
+                OptionsAvailable = false
+            };
+        }
+
+        if (attr.OptionSetByValue.Count > 0 || attr.OptionSetByLabel.Count > 0)
+        {
+            return new AttributeOptionsResult
+            {
+                Attribute = attr,
+                OptionsAvailable = true,
+                AlreadyCached = true
+            };
+        }
+
+        var failureKey = OptionSetFailureKey(entity.LogicalName, attr.LogicalName);
+        if (_optionSetFailures.TryGetValue(failureKey, out var prior) &&
+            DateTimeOffset.UtcNow - prior.At < OptionSetFailureCooldown)
+        {
+            _logger.LogInformation(
+                "[OPTIONSET] SkipRetry Entity={Entity} Attribute={Attribute} Reason={Reason} CooldownRemainingSec={Sec}",
+                entity.LogicalName,
+                attr.LogicalName,
+                TruncateForLog(prior.Reason, 160),
+                (int)(OptionSetFailureCooldown - (DateTimeOffset.UtcNow - prior.At)).TotalSeconds);
+
+            return new AttributeOptionsResult
+            {
+                Attribute = attr,
+                OptionsAvailable = false,
+                Error = prior.Reason
+            };
+        }
+
+        var loaded = await LoadAttributeOptionsAsync(entity.LogicalName, attr, cancellationToken);
+        if (!loaded.Success || loaded.Attribute is null)
+        {
+            var reason = loaded.Error ?? "OptionSet enrichment failed.";
+            _optionSetFailures[failureKey] = (DateTimeOffset.UtcNow, reason);
+            return new AttributeOptionsResult
+            {
+                Attribute = attr,
+                OptionsAvailable = false,
+                Error = reason,
+                RequestPath = loaded.RequestPath
+            };
+        }
+
+        _optionSetFailures.TryRemove(failureKey, out _);
+
+        // Persist enriched options into the in-memory registry for subsequent requests.
+        var enriched = loaded.Attribute;
+        var updatedAttributes = entity.Attributes
+            .Select(a =>
+                a.LogicalName.Equals(enriched.LogicalName, StringComparison.OrdinalIgnoreCase)
+                    ? enriched
+                    : a)
+            .ToArray();
+        _registry.Upsert(new CrmEntityMetadata
+        {
+            LogicalName = entity.LogicalName,
+            EntitySetName = entity.EntitySetName,
+            DisplayName = entity.DisplayName,
+            PrimaryIdAttribute = entity.PrimaryIdAttribute,
+            PrimaryNameAttribute = entity.PrimaryNameAttribute,
+            IsApprovedForAi = entity.IsApprovedForAi,
+            Aliases = entity.Aliases,
+            Attributes = updatedAttributes,
+            Relationships = entity.Relationships,
+            DiscoveredAtUtc = entity.DiscoveredAtUtc,
+            Provenance = entity.Provenance,
+            IsLiveVerified = entity.IsLiveVerified,
+            DiscoveryError = entity.DiscoveryError
+        });
+
+        return new AttributeOptionsResult
+        {
+            Attribute = enriched,
+            OptionsAvailable = true,
+            AlreadyCached = false,
+            RequestPath = loaded.RequestPath
+        };
     }
 
     public async Task RefreshAsync(string? logicalName = null, CancellationToken cancellationToken = default)
@@ -268,7 +381,7 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
 
         var attrsPath =
             $"EntityDefinitions(LogicalName='{Escape(logicalName)}')/Attributes" +
-            "?$select=LogicalName,AttributeType,SchemaName,DisplayName,IsValidForRead,IsCustomAttribute,IsValidForGrid" +
+            "?$select=LogicalName,AttributeType,SchemaName,DisplayName,Description,IsValidForRead,IsCustomAttribute,IsValidForGrid" +
             "&$filter=IsValidForRead eq true";
         var attrsHttp = await _http.GetAsync(attrsPath, cancellationToken);
         if (!attrsHttp.IsSuccess)
@@ -631,83 +744,244 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
         List<CrmAttributeMetadata> attributes,
         CancellationToken cancellationToken)
     {
-        // statecode/statuscode only — full picklist enrichment is too chatty against Dynamics.
+        // Startup warm-up: only common state/status fields. Other choice fields load lazily via EnsureAttributeOptionsAsync.
         var candidates = attributes
             .Where(a =>
                 a.LogicalName.Equals("statecode", StringComparison.OrdinalIgnoreCase) ||
                 a.LogicalName.Equals("statuscode", StringComparison.OrdinalIgnoreCase))
-            .Where(a => a.Kind is CrmAttributeKind.Status or CrmAttributeKind.State or CrmAttributeKind.Picklist)
+            .Where(a => IsChoiceAttributeKind(a.Kind))
             .Take(2)
             .ToList();
 
         foreach (var attr in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            try
+            var loaded = await LoadAttributeOptionsAsync(logicalName, attr, cancellationToken);
+            if (!loaded.Success || loaded.Attribute is null)
             {
-                var metaType = attr.Kind == CrmAttributeKind.State
-                    ? "StateAttributeMetadata"
-                    : "StatusAttributeMetadata";
-                var path =
-                    $"EntityDefinitions(LogicalName='{Escape(logicalName)}')" +
-                    $"/Attributes(LogicalName='{Escape(attr.LogicalName)}')" +
-                    $"/Microsoft.Dynamics.CRM.{metaType}?$select=LogicalName&$expand=OptionSet($select=Options)";
-                var http = await _http.GetAsync(path, cancellationToken);
-                if (!http.IsSuccess)
-                {
-                    continue;
-                }
-
-                using var doc = JsonDocument.Parse(http.Body);
-                if (!doc.RootElement.TryGetProperty("OptionSet", out var optionSet) ||
-                    !optionSet.TryGetProperty("Options", out var options))
-                {
-                    continue;
-                }
-
-                var byLabel = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                var byValue = new Dictionary<int, string>();
-                foreach (var opt in options.EnumerateArray())
-                {
-                    if (!opt.TryGetProperty("Value", out var valueProp) || !valueProp.TryGetInt32(out var value))
-                    {
-                        continue;
-                    }
-
-                    var label = GetLocalizedLabel(opt, "Label") ?? value.ToString();
-                    byLabel[label] = value;
-                    byValue[value] = label;
-                }
-
-                var idx = attributes.FindIndex(a => a.LogicalName.Equals(attr.LogicalName, StringComparison.OrdinalIgnoreCase));
-                if (idx >= 0)
-                {
-                    var old = attributes[idx];
-                    attributes[idx] = new CrmAttributeMetadata
-                    {
-                        LogicalName = old.LogicalName,
-                        ODataPropertyName = old.ODataPropertyName,
-                        DisplayName = old.DisplayName,
-                        Kind = old.Kind,
-                        AttributeTypeName = old.AttributeTypeName,
-                        IsValidForRead = old.IsValidForRead,
-                        IsFilterable = old.IsFilterable,
-                        IsSortable = old.IsSortable,
-                        IsSearchable = old.IsSearchable,
-                        IsCustom = old.IsCustom,
-                        Aliases = old.Aliases,
-                        AllowedOperators = old.AllowedOperators,
-                        OptionSetByLabel = byLabel,
-                        OptionSetByValue = byValue
-                    };
-                }
+                continue;
             }
-            catch (Exception ex)
+
+            var idx = attributes.FindIndex(a =>
+                a.LogicalName.Equals(attr.LogicalName, StringComparison.OrdinalIgnoreCase));
+            if (idx >= 0)
             {
-                _logger.LogDebug(ex, "OptionSet enrich failed for {Entity}.{Attr}", logicalName, attr.LogicalName);
+                attributes[idx] = loaded.Attribute;
             }
         }
     }
+
+    private async Task<(bool Success, CrmAttributeMetadata? Attribute, string? Error, string? RequestPath)>
+        LoadAttributeOptionsAsync(
+            string entityLogicalName,
+            CrmAttributeMetadata attr,
+            CancellationToken cancellationToken)
+    {
+        var request = OptionSetMetadataRequest.TryResolve(attr);
+        if (request is null)
+        {
+            return (false, null, $"Attribute kind '{attr.Kind}' does not support OptionSet enrichment.", null);
+        }
+
+        var path = OptionSetMetadataRequest.BuildPath(entityLogicalName, attr.LogicalName, request.Value);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        try
+        {
+            var http = await _http.GetAsync(path, cancellationToken);
+            if (!http.IsSuccess)
+            {
+                var sanitizedBody = SanitizeDynamicsErrorBody(http.Body);
+                _logger.LogWarning(
+                    "[OPTIONSET] Dynamics HTTP {Status} Entity={Entity} Attribute={Attribute} Kind={Kind} " +
+                    "MetaType={MetaType} Path={Path} Body={Body}",
+                    http.StatusCode,
+                    entityLogicalName,
+                    attr.LogicalName,
+                    attr.Kind,
+                    request.Value.MetadataType,
+                    path,
+                    sanitizedBody);
+
+                return (
+                    false,
+                    null,
+                    $"Dynamics OptionSet metadata request failed (HTTP {http.StatusCode}) for " +
+                    $"{entityLogicalName}.{attr.LogicalName} via {request.Value.MetadataType}: {sanitizedBody}",
+                    path);
+            }
+
+            using var doc = JsonDocument.Parse(http.Body);
+            if (!doc.RootElement.TryGetProperty("OptionSet", out var optionSet))
+            {
+                return (
+                    false,
+                    null,
+                    $"Dynamics response for {entityLogicalName}.{attr.LogicalName} did not include OptionSet.",
+                    path);
+            }
+
+            var byLabel = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var byValue = new Dictionary<int, string>();
+            ParseOptionSetElement(optionSet, attr.Kind, byLabel, byValue);
+            if (byValue.Count == 0)
+            {
+                return (
+                    false,
+                    null,
+                    $"Dynamics OptionSet for {entityLogicalName}.{attr.LogicalName} contained no usable options.",
+                    path);
+            }
+
+            _logger.LogInformation(
+                "[OPTIONSET] Loaded Entity={Entity} Attribute={Attribute} Kind={Kind} MetaType={MetaType} " +
+                "OptionCount={Count} Path={Path}",
+                entityLogicalName,
+                attr.LogicalName,
+                attr.Kind,
+                request.Value.MetadataType,
+                byValue.Count,
+                path);
+
+            return (true, CloneWithOptions(attr, byLabel, byValue), null, path);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "[OPTIONSET] Enrichment exception Entity={Entity} Attribute={Attribute} MetaType={MetaType} Path={Path}",
+                entityLogicalName,
+                attr.LogicalName,
+                request.Value.MetadataType,
+                path);
+
+            return (
+                false,
+                null,
+                $"OptionSet enrichment exception for {entityLogicalName}.{attr.LogicalName}: {TruncateForLog(ex.Message, 160)}",
+                path);
+        }
+    }
+
+    internal static bool IsChoiceAttributeKind(CrmAttributeKind kind) =>
+        kind is CrmAttributeKind.Picklist or CrmAttributeKind.Status or CrmAttributeKind.State
+            or CrmAttributeKind.Boolean;
+
+    /// <summary>
+    /// Parses OptionSet JSON using only properties valid for the known attribute kind.
+    /// </summary>
+    internal static void ParseOptionSetElement(
+        JsonElement optionSet,
+        CrmAttributeKind kind,
+        IDictionary<string, int> byLabel,
+        IDictionary<int, string> byValue)
+    {
+        if (kind == CrmAttributeKind.Boolean)
+        {
+            if (optionSet.TryGetProperty("TrueOption", out var trueOpt))
+            {
+                TryAddOption(trueOpt, byLabel, byValue);
+            }
+
+            if (optionSet.TryGetProperty("FalseOption", out var falseOpt))
+            {
+                TryAddOption(falseOpt, byLabel, byValue);
+            }
+
+            return;
+        }
+
+        if (optionSet.TryGetProperty("Options", out var options) &&
+            options.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var opt in options.EnumerateArray())
+            {
+                TryAddOption(opt, byLabel, byValue);
+            }
+        }
+    }
+
+    private static string OptionSetFailureKey(string entity, string attribute) =>
+        entity.Trim() + "|" + attribute.Trim();
+
+    /// <summary>Truncate Dynamics error JSON for logs — no CRM business records.</summary>
+    internal static string SanitizeDynamicsErrorBody(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return "(empty)";
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("error", out var error))
+            {
+                var code = error.TryGetProperty("code", out var codeEl) ? codeEl.ToString() : null;
+                var message = error.TryGetProperty("message", out var msgEl) ? msgEl.GetString() : null;
+                var combined = string.Join(" | ", new[] { code, message }.Where(s => !string.IsNullOrWhiteSpace(s)));
+                if (!string.IsNullOrWhiteSpace(combined))
+                {
+                    return TruncateForLog(combined, 400);
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // fall through to raw truncate
+        }
+
+        return TruncateForLog(body.Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal), 400);
+    }
+
+    private static string TruncateForLog(string? value, int max)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length <= max)
+        {
+            return value ?? string.Empty;
+        }
+
+        return value[..max] + "…";
+    }
+
+    private static void TryAddOption(
+        JsonElement opt,
+        IDictionary<string, int> byLabel,
+        IDictionary<int, string> byValue)
+    {
+        if (!opt.TryGetProperty("Value", out var valueProp) || !valueProp.TryGetInt32(out var value))
+        {
+            return;
+        }
+
+        var label = GetLocalizedLabel(opt, "Label") ?? value.ToString();
+        byLabel[label] = value;
+        byValue[value] = label;
+    }
+
+    private static CrmAttributeMetadata CloneWithOptions(
+        CrmAttributeMetadata old,
+        IReadOnlyDictionary<string, int> byLabel,
+        IReadOnlyDictionary<int, string> byValue) =>
+        new()
+        {
+            LogicalName = old.LogicalName,
+            ODataPropertyName = old.ODataPropertyName,
+            DisplayName = old.DisplayName,
+            Description = old.Description,
+            Kind = old.Kind,
+            AttributeTypeName = old.AttributeTypeName,
+            IsValidForRead = old.IsValidForRead,
+            IsFilterable = old.IsFilterable,
+            IsSortable = old.IsSortable,
+            IsSearchable = old.IsSearchable,
+            IsCustom = old.IsCustom,
+            Aliases = old.Aliases,
+            AllowedOperators = old.AllowedOperators,
+            OptionSetByLabel = byLabel,
+            OptionSetByValue = byValue
+        };
 
     /// <summary>
     /// Prefer English (1033) LocalizedLabels, then UserLocalizedLabel; otherwise null
@@ -756,6 +1030,7 @@ public sealed class DynamicsCrmMetadataService : ICrmMetadataService
                 LogicalName = logical,
                 ODataPropertyName = AttributeKindMapper.ToODataPropertyName(logical, kind),
                 DisplayName = GetLocalizedLabel(item, "DisplayName"),
+                Description = GetLocalizedLabel(item, "Description"),
                 Kind = kind,
                 AttributeTypeName = typeName,
                 IsValidForRead = isRead,

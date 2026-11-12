@@ -1,4 +1,4 @@
-using System.Net.Http.Json;
+﻿using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CrmAiPoc.Api.Configuration;
@@ -17,12 +17,12 @@ public sealed class OllamaEmbeddingClient : IOllamaEmbeddingClient
     };
 
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly OllamaOptions _options;
+    private readonly OllamaEmbeddingOptions _options;
     private readonly ILogger<OllamaEmbeddingClient> _logger;
 
     public OllamaEmbeddingClient(
         IHttpClientFactory httpClientFactory,
-        IOptions<OllamaOptions> options,
+        IOptions<OllamaEmbeddingOptions> options,
         ILogger<OllamaEmbeddingClient> logger)
     {
         _httpClientFactory = httpClientFactory;
@@ -141,3 +141,4 @@ public sealed class OllamaEmbeddingClient : IOllamaEmbeddingClient
         public required object Input { get; init; }
     }
 }
+

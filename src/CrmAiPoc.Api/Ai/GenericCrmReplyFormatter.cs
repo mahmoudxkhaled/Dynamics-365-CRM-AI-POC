@@ -1,13 +1,12 @@
 using System.Globalization;
-using System.Text;
 using System.Text.RegularExpressions;
-using CrmAiPoc.Api.Crm.Generic;
 
 namespace CrmAiPoc.Api.Ai;
 
 /// <summary>
-/// Entity-independent local formatter for generic CRM query results (English).
-/// Produces user-readable wording — not technical schema / FetchXML join strings.
+/// Humanizes technical filter/sort diagnostic strings for logging and tests.
+/// Successful CRM query results are rendered as structured tables in the UI —
+/// this type no longer generates user-facing result summaries.
 /// </summary>
 public static class GenericCrmReplyFormatter
 {
@@ -22,79 +21,6 @@ public static class GenericCrmReplyFormatter
     private static readonly Regex SimpleFilterRegex = new(
         @"^(?<field>[A-Za-z0-9_]+)\s+(?<op>eq|ne|gt|ge|lt|le|contains|Equals|NotEquals|GreaterThan|GreaterOrEqual|LessThan|LessOrEqual|Contains)\s+(?<value>.+)$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
-    public static string Format(GenericCrmQueryResult result, string languageHint, Guid? crmUserId = null)
-    {
-        _ = languageHint;
-        _ = crmUserId; // keep CRM identity out of user-facing text
-        var sb = new StringBuilder();
-        var entityLabel = HumanizeEntity(result.Entity);
-        var entityLabelPlural = Pluralize(entityLabel);
-
-        if (result.Operation == CrmQueryOperation.Count)
-        {
-            if (result.Count is null)
-            {
-                return result.Message ?? $"Could not count {entityLabelPlural.ToLowerInvariant()}.";
-            }
-
-            if (result.CountMayBeCapped || result.CountLimitExceededAnnotation)
-            {
-                sb.AppendLine(
-                    $"At least {result.Count} matching {entityLabelPlural.ToLowerInvariant()} were found (exact total may be higher).");
-            }
-            else
-            {
-                sb.AppendLine($"Matching {entityLabelPlural.ToLowerInvariant()}: {result.Count}.");
-            }
-        }
-        else if (result.Operation == CrmQueryOperation.Aggregate)
-        {
-            sb.AppendLine(FormatAggregate(result));
-        }
-        else if (result.Items.Count == 0)
-        {
-            sb.AppendLine($"No {entityLabelPlural.ToLowerInvariant()} matched your question.");
-        }
-        else
-        {
-            sb.AppendLine($"Here are {result.Items.Count} {entityLabelPlural.ToLowerInvariant()}:");
-
-            var i = 1;
-            foreach (var row in result.Items)
-            {
-                sb.AppendLine($"{i}. {FormatRow(row, result)}");
-                i++;
-            }
-        }
-
-        // Applied filters / sort temporarily hidden from user-facing reply.
-        // var readableFilters = result.AppliedFilterSummary
-        //     .Select(HumanizeFilterSummary)
-        //     .Where(s => !string.IsNullOrWhiteSpace(s))
-        //     .Distinct(StringComparer.OrdinalIgnoreCase)
-        //     .ToList();
-        //
-        // if (readableFilters.Count > 0)
-        // {
-        //     sb.AppendLine();
-        //     sb.AppendLine("Applied filters:");
-        //     foreach (var filter in readableFilters)
-        //     {
-        //         sb.AppendLine($"- {filter}");
-        //     }
-        // }
-        //
-        // if (!string.IsNullOrWhiteSpace(result.SortSummary) && result.Operation == CrmQueryOperation.List)
-        // {
-        //     sb.AppendLine($"Sorted by: {HumanizeSortSummary(result.SortSummary)}");
-        // }
-
-        sb.AppendLine();
-        sb.AppendLine("Your CRM data stayed private. Records were not sent to the AI model.");
-
-        return sb.ToString().TrimEnd();
-    }
 
     internal static string HumanizeFilterSummary(string raw)
     {
@@ -223,11 +149,6 @@ public static class GenericCrmReplyFormatter
         _ => ToTitleWords(logical)
     };
 
-    private static string Pluralize(string singular) =>
-        singular.EndsWith("s", StringComparison.OrdinalIgnoreCase)
-            ? singular
-            : singular + "s";
-
     private static string HumanizeField(string field)
     {
         var key = field.Trim();
@@ -269,7 +190,6 @@ public static class GenericCrmReplyFormatter
             return string.Empty;
         }
 
-        // Prefer the last segment (e.g. customeraccountid / billingcontactid).
         var focus = parts[^1];
         if (focus.EndsWith("id", StringComparison.OrdinalIgnoreCase) && focus.Length > 2)
         {
@@ -280,15 +200,12 @@ public static class GenericCrmReplyFormatter
         return string.IsNullOrWhiteSpace(focus) ? string.Empty : ToTitleWords(focus);
     }
 
-    private static string InsertKnownWordBreaks(string value)
-    {
-        // customeraccount → customer account, billingcontact → billing contact
-        return Regex.Replace(
+    private static string InsertKnownWordBreaks(string value) =>
+        Regex.Replace(
             value,
             @"(customer|billing|primary|parent|owning|created|modified)?(account|contact|order|lead|user|opportunity|customer)",
             m => string.Join(' ', new[] { m.Groups[1].Value, m.Groups[2].Value }.Where(x => x.Length > 0)),
             RegexOptions.IgnoreCase);
-    }
 
     private static string HumanizeLooseTechnicalText(string text)
     {
@@ -307,194 +224,5 @@ public static class GenericCrmReplyFormatter
         var spaced = Regex.Replace(value.Replace('_', ' ').Trim(), @"([a-z])([A-Z])", "$1 $2");
         spaced = Regex.Replace(spaced, @"\s+", " ");
         return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(spaced.ToLowerInvariant());
-    }
-
-    private static string FormatAggregate(GenericCrmQueryResult result)
-    {
-        var entityLabel = HumanizeEntity(result.Entity);
-        if (result.Items.Count == 0)
-        {
-            return $"No grouped results for {Pluralize(entityLabel).ToLowerInvariant()}.";
-        }
-
-        var segments = new List<string>();
-        decimal? countTotal = null;
-        var allCounts = true;
-        foreach (var row in result.Items)
-        {
-            var label = ResolveAggregateGroupLabel(row);
-            var metric = ResolveAggregateMetric(row, out var numeric, out var isCountLike);
-            if (string.IsNullOrWhiteSpace(metric))
-            {
-                continue;
-            }
-
-            if (isCountLike && numeric is not null)
-            {
-                countTotal = (countTotal ?? 0m) + numeric.Value;
-            }
-            else
-            {
-                allCounts = false;
-            }
-
-            segments.Add(string.IsNullOrWhiteSpace(label) ? metric : $"{metric} {label}");
-        }
-
-        if (segments.Count == 0)
-        {
-            return $"Returned {result.Items.Count} grouped row(s) for {Pluralize(entityLabel).ToLowerInvariant()}.";
-        }
-
-        var joined = JoinNatural(segments);
-        if (allCounts && countTotal is decimal total)
-        {
-            var totalText = total.ToString("0.##", CultureInfo.InvariantCulture);
-            return $"Found {totalText} {Pluralize(entityLabel).ToLowerInvariant()}: {joined}.";
-        }
-
-        return $"{entityLabel} summary: {joined}.";
-    }
-
-    private static string JoinNatural(IReadOnlyList<string> parts)
-    {
-        if (parts.Count == 1)
-        {
-            return parts[0];
-        }
-
-        if (parts.Count == 2)
-        {
-            return $"{parts[0]} and {parts[1]}";
-        }
-
-        var head = string.Join(", ", parts.Take(parts.Count - 1));
-        return $"{head}, and {parts[^1]}";
-    }
-
-    private static string ResolveAggregateGroupLabel(IReadOnlyDictionary<string, object?> row)
-    {
-        if (TryGet(row, "year", out var year) && TryGet(row, "month", out var month) &&
-            !string.IsNullOrWhiteSpace(year) && !string.IsNullOrWhiteSpace(month))
-        {
-            var m = month!.PadLeft(2, '0');
-            return $"{year}-{m}";
-        }
-
-        foreach (var key in new[] { "statuscode_label", "statecode_label", "status_label", "statuscode", "statecode" })
-        {
-            if (TryGet(row, key, out var value) && !string.IsNullOrWhiteSpace(value))
-            {
-                return value!;
-            }
-        }
-
-        return string.Empty;
-    }
-
-    private static string ResolveAggregateMetric(
-        IReadOnlyDictionary<string, object?> row,
-        out decimal? numeric,
-        out bool isCountLike)
-    {
-        numeric = null;
-        isCountLike = false;
-        foreach (var key in new[]
-                 {
-                     "record_count", "ordercount", "count", "total_amount", "totalamount_sum", "sum", "avg", "min", "max"
-                 })
-        {
-            if (!row.TryGetValue(key, out var raw) || raw is null)
-            {
-                continue;
-            }
-
-            isCountLike = key is "record_count" or "ordercount" or "count";
-            numeric = ToDecimalOrNull(raw);
-            if (TryGet(row, key, out var text) && !string.IsNullOrWhiteSpace(text))
-            {
-                return text!;
-            }
-        }
-
-        foreach (var kv in row)
-        {
-            if (kv.Key.EndsWith("_label", StringComparison.OrdinalIgnoreCase) ||
-                kv.Key.Equals("year", StringComparison.OrdinalIgnoreCase) ||
-                kv.Key.Equals("month", StringComparison.OrdinalIgnoreCase) ||
-                kv.Key.Equals("statuscode", StringComparison.OrdinalIgnoreCase) ||
-                kv.Key.Equals("statecode", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (TryGet(row, kv.Key, out var value) && !string.IsNullOrWhiteSpace(value))
-            {
-                numeric = ToDecimalOrNull(kv.Value);
-                return value!;
-            }
-        }
-
-        return string.Empty;
-    }
-
-    private static decimal? ToDecimalOrNull(object? value) => value switch
-    {
-        decimal d => d,
-        double db => (decimal)db,
-        float f => (decimal)f,
-        int i => i,
-        long l => l,
-        string s when decimal.TryParse(s, NumberStyles.Number, CultureInfo.InvariantCulture, out var p) => p,
-        _ => null
-    };
-
-    private static string FormatRow(IReadOnlyDictionary<string, object?> row, GenericCrmQueryResult result)
-    {
-        var parts = new List<string>();
-        if (!string.IsNullOrWhiteSpace(result.PrimaryNameAttribute) &&
-            TryGet(row, result.PrimaryNameAttribute!, out var name) &&
-            !string.IsNullOrWhiteSpace(name))
-        {
-            parts.Add(name!);
-        }
-
-        foreach (var key in new[] { "ordernumber", "accountnumber", "emailaddress1", "telephone1", "createdon", "totalamount", "jobtitle" })
-        {
-            if (TryGet(row, key, out var value) && !string.IsNullOrWhiteSpace(value))
-            {
-                parts.Add(value!);
-            }
-        }
-
-        foreach (var key in new[] { "statecode_label", "statuscode_label", "statecode", "statuscode" })
-        {
-            if (TryGet(row, key, out var value) && !string.IsNullOrWhiteSpace(value))
-            {
-                parts.Add(value!);
-                break;
-            }
-        }
-
-        return parts.Count > 0 ? string.Join(" · ", parts) : "(record)";
-    }
-
-    private static bool TryGet(IReadOnlyDictionary<string, object?> row, string key, out string? value)
-    {
-        value = null;
-        if (!row.TryGetValue(key, out var raw) || raw is null)
-        {
-            return false;
-        }
-
-        value = raw switch
-        {
-            DateTimeOffset dto => dto.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-            DateTime dt => dt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-            decimal d => d.ToString("N2", CultureInfo.InvariantCulture),
-            double db => db.ToString("N2", CultureInfo.InvariantCulture),
-            _ => Convert.ToString(raw, CultureInfo.InvariantCulture)
-        };
-        return !string.IsNullOrWhiteSpace(value);
     }
 }

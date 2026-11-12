@@ -293,20 +293,21 @@ public static partial class CrmRelationshipResolver
             return SingleLinkResult.Fail($"Duplicate link alias '{alias}'.");
         }
 
-        var select = ResolveLinkSelect(target, spec.Select);
-        var filters = new List<(string, string, string, string)>();
-        foreach (var filter in spec.Filters.Take(CrmQueryLimits.MaxFilters))
+        if (spec.PostJoinFilters.Count > 0 && spec.JoinType != CrmLinkJoinType.Outer)
         {
-            var built = FetchXmlConditionBuilder.BuildFilter(target, filter);
-            if (!built.Success || built.Condition is null)
-            {
-                return SingleLinkResult.Fail(built.Error ?? "Invalid related filter.");
-            }
+            return SingleLinkResult.Fail(
+                "postJoinFilters require joinType=outer for post-join / anti-join semantics.");
+        }
 
-            var attrName = built.Condition.Attribute("attribute")?.Value ?? filter.Field;
-            var op = built.Condition.Attribute("operator")?.Value ?? "eq";
-            var value = built.Condition.Attribute("value")?.Value ?? filter.Value;
-            filters.Add((attrName, op, value, built.Summary ?? filter.Field));
+        var select = ResolveLinkSelect(target, spec.Select);
+        if (!TryResolveFilterConditions(target, spec.Filters, out var filters, out var filterError))
+        {
+            return SingleLinkResult.Fail(filterError ?? "Invalid related filter.");
+        }
+
+        if (!TryResolveFilterConditions(target, spec.PostJoinFilters, out var postJoinFilters, out var postJoinError))
+        {
+            return SingleLinkResult.Fail(postJoinError ?? "Invalid post-join filter.");
         }
 
         totalLinks++;
@@ -333,10 +334,41 @@ public static partial class CrmRelationshipResolver
             ExpandsToMany = expandsToMany,
             SelectLogicalNames = select,
             Filters = filters,
+            PostJoinFilters = postJoinFilters,
             Children = children,
             Summary =
                 $"{parentEntity.LogicalName}-[{rel.SchemaName}/{spec.JoinType}]->{target.LogicalName} as {alias}"
         });
+    }
+
+    private static bool TryResolveFilterConditions(
+        CrmEntityMetadata target,
+        IReadOnlyList<CrmQueryFilter> source,
+        out List<CrmResolvedFilterCondition> conditions,
+        out string? error)
+    {
+        conditions = [];
+        error = null;
+        foreach (var filter in source.Take(CrmQueryLimits.MaxFilters))
+        {
+            var built = FetchXmlConditionBuilder.BuildFilter(target, filter);
+            if (!built.Success || built.Condition is null)
+            {
+                error = built.Error ?? "Invalid related filter.";
+                return false;
+            }
+
+            var attrName = built.Condition.Attribute("attribute")?.Value ?? filter.Field;
+            var op = built.Condition.Attribute("operator")?.Value ?? "eq";
+            var value = built.Condition.Attribute("value")?.Value;
+            conditions.Add(new CrmResolvedFilterCondition(
+                attrName,
+                op,
+                value,
+                built.Summary ?? filter.Field));
+        }
+
+        return true;
     }
 
     private static bool Relates(CrmRelationshipMetadata r, string a, string b) =>

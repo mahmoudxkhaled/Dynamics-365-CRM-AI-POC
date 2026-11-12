@@ -31,13 +31,15 @@
 
 .composer-welcome textarea {
   min-height: 44px;
-  max-height: 140px;
+  max-height: 200px;
   padding: 8px 4px;
   border: none;
   border-radius: 0;
   font-size: 15px;
   line-height: 1.45;
+  overflow-y: auto;
   resize: none;
+  field-sizing: content;
   background: transparent;
 }
 
